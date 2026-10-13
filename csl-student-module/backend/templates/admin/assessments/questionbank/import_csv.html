@@ -1,0 +1,17 @@
+{% extends "admin/base_site.html" %}
+{% block content %}
+<div style="max-width: 650px; margin: 30px auto; background: #fff; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px;">
+  <h2>Bulk Import Question Bank from CSV</h2>
+  <p style="color: #64748b; font-size: 14px; margin-bottom: 20px;">
+    Upload a CSV with columns: <code>prompt, section_type, category, difficulty, option_a, option_b, option_c, option_d, correct_option, explanation</code>
+  </p>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <div style="margin-top: 20px;">
+      <input type="submit" value="Import Questions" class="default" style="padding: 8px 16px; background: #2563eb; color: #fff; border: none; border-radius: 4px; cursor: pointer;">
+      <a href=".." style="margin-left: 12px; color: #64748b;">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}
