@@ -141,7 +141,7 @@ def select_balanced_questions(section_type: str, required_count: int, assessment
 
     buckets = defaultdict(list)
     for q in qs:
-        buckets[(q.category, q.difficulty)].append(q)
+        buckets[(q.difficulty,)].append(q)
 
     for key in buckets:
         random.shuffle(buckets[key])

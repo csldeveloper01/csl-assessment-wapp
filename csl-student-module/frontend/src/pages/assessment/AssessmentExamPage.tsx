@@ -36,7 +36,9 @@ export function AssessmentExamPage() {
   const [fullscreenWarning, setFullscreenWarning] = useState<string>('');
   const [securityWarning, setSecurityWarning] = useState<string>('');
   const [terminalNotice, setTerminalNotice] = useState<string>('');
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(true);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(
+    () => !!(document.fullscreenElement || (document as any).webkitFullscreenElement || (window.innerHeight >= screen.height - 20))
+  );
 
   const isPageHiddenRef = useRef<boolean>(false);
 
@@ -203,7 +205,13 @@ export function AssessmentExamPage() {
     };
 
     const handleFullscreenChange = async () => {
-      const currentlyFs = !!document.fullscreenElement;
+      const currentlyFs = !!(
+        document.fullscreenElement ||
+        (document as any).webkitFullscreenElement ||
+        (document as any).mozFullScreenElement ||
+        (document as any).msFullscreenElement ||
+        (window.innerHeight >= screen.height - 20)
+      );
       setIsFullscreen(currentlyFs);
 
       if (!currentlyFs && !submitting) {
@@ -277,13 +285,23 @@ export function AssessmentExamPage() {
   // Action to re-enter fullscreen
   const handleReenterFullscreen = async () => {
     try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
+      const docEl = document.documentElement as any;
+      if (docEl.requestFullscreen) {
+        await docEl.requestFullscreen();
+      } else if (docEl.webkitRequestFullscreen) {
+        await docEl.webkitRequestFullscreen();
+      } else if (docEl.msRequestFullscreen) {
+        await docEl.msRequestFullscreen();
+      }
+      setIsFullscreen(true);
+      setFullscreenWarning('');
+    } catch (err) {
+      console.warn('Fullscreen entry rejected or restricted:', err);
+      // Fallback check if user used F11 or window is maximized
+      if (window.innerHeight >= screen.height - 20) {
         setIsFullscreen(true);
         setFullscreenWarning('');
       }
-    } catch (err) {
-      console.error('Failed to re-enter fullscreen:', err);
     }
   };
 
@@ -1036,9 +1054,9 @@ export function AssessmentExamPage() {
                       textOverflow: 'ellipsis',
                       flex: 1,
                     }}
-                    title={q.category || q.section_type}
+                    title={q.section_type === 'APTITUDE' ? 'Aptitude' : 'Coding'}
                   >
-                    {q.category || (q.section_type === 'APTITUDE' ? 'Aptitude' : 'Coding')}
+                    {q.section_type === 'APTITUDE' ? 'Aptitude' : 'Coding'}
                   </span>
                 </button>
               );
@@ -1823,6 +1841,84 @@ export function AssessmentExamPage() {
             <div style={{ fontSize: '13px', color: '#6B7280', fontWeight: 600 }}>
               Redirecting to assessment results scorecard...
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ─── 5. FULL-SCREEN ENFORCEMENT MODAL ───────────────────────── */}
+      {!isFullscreen && !submitting && !terminalNotice && !loading && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(11, 46, 111, 0.88)',
+            backdropFilter: 'blur(6px)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 999,
+            padding: '24px',
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '16px',
+              padding: '36px 32px',
+              maxWidth: '500px',
+              width: '100%',
+              textAlign: 'center',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.3)',
+              border: '2px solid #F5B83D',
+            }}
+          >
+            <div
+              style={{
+                width: '60px',
+                height: '60px',
+                borderRadius: '50%',
+                backgroundColor: '#EFF6FF',
+                color: '#1455B8',
+                fontSize: '28px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 18px',
+                fontWeight: 900,
+              }}
+            >
+              ⛶
+            </div>
+            <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#0B2E6F', margin: '0 0 10px' }}>
+              Full-Screen Mode Required
+            </h2>
+            <p style={{ fontSize: '14px', color: '#475569', lineHeight: 1.6, margin: '0 0 24px' }}>
+              To ensure examination security, this assessment must be completed in full-screen mode.
+              Please click below to enter full-screen and continue your assessment.
+            </p>
+            <button
+              onClick={handleReenterFullscreen}
+              style={{
+                width: '100%',
+                padding: '13px 24px',
+                backgroundColor: '#1455B8',
+                color: '#FFFFFF',
+                border: 'none',
+                borderRadius: '10px',
+                fontSize: '15px',
+                fontWeight: 800,
+                cursor: 'pointer',
+                boxShadow: '0 4px 14px rgba(20, 85, 184, 0.35)',
+                transition: 'background-color 0.15s ease',
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#0B2E6F')}
+              onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = '#1455B8')}
+            >
+              Enter Full-Screen Mode
+            </button>
+            <p style={{ fontSize: '12px', color: '#94A3B8', margin: '14px 0 0', lineHeight: 1.4 }}>
+              If your browser restricts automatic full-screen, press <kbd style={{ padding: '2px 6px', background: '#F1F5F9', border: '1px solid #CBD5E1', borderRadius: '4px', fontWeight: 700 }}>F11</kbd> on your keyboard.
+            </p>
           </div>
         </div>
       )}

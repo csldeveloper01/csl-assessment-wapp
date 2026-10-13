@@ -616,7 +616,7 @@ export function AdminQuestionEditorModal({
                     padding: '16px 20px',
                     boxShadow: '0 2px 6px rgba(11, 46, 111, 0.03)',
                     display: 'grid',
-                    gridTemplateColumns: '1fr 1fr 1fr',
+                    gridTemplateColumns: '1fr 1fr',
                     gap: '16px',
                   }}
                 >
@@ -655,54 +655,6 @@ export function AdminQuestionEditorModal({
                       <option value="APTITUDE">Aptitude</option>
                       <option value="CODING">Coding Fundamentals</option>
                     </select>
-                  </div>
-
-                  {/* Category / Topic */}
-                  <div>
-                    <label
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        fontSize: '12px',
-                        fontWeight: 700,
-                        color: '#0B2E6F',
-                        marginBottom: '6px',
-                      }}
-                    >
-                      <span>🏷️</span>
-                      <span>Category / Topic *</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      list="category-suggestions"
-                      value={category}
-                      onChange={(e) => setCategory(e.target.value)}
-                      placeholder="e.g. Object-Oriented Programming"
-                      style={{
-                        width: '100%',
-                        padding: '9px 12px',
-                        borderRadius: '8px',
-                        border: '1.5px solid #CBD5E1',
-                        fontSize: '13px',
-                        color: '#1E293B',
-                        backgroundColor: '#FFFFFF',
-                        boxSizing: 'border-box',
-                        outlineColor: '#1455B8',
-                      }}
-                    />
-                    <datalist id="category-suggestions">
-                      <option value="Object-Oriented Programming" />
-                      <option value="Data Structures" />
-                      <option value="Loops and Iterations" />
-                      <option value="Algorithms & Complexity" />
-                      <option value="Python Basics" />
-                      <option value="Quantitative Aptitude" />
-                      <option value="Logical Reasoning" />
-                      <option value="Verbal Ability" />
-                      <option value="Database Concepts" />
-                    </datalist>
                   </div>
 
                   {/* Difficulty */}

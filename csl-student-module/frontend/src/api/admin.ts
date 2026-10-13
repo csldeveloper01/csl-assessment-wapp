@@ -288,6 +288,9 @@ export interface AdminResult {
   fullscreen_exit_count: number;
   is_flagged: boolean;
   flag_reason?: string;
+  assessment_total_marks?: number;
+  assessment_aptitude_count?: number;
+  assessment_coding_count?: number;
 }
 
 // ─── AUTH & STATS ───────────────────────────────────────────────────────────

@@ -29,6 +29,20 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
         search: search.trim() || undefined,
         college_id: selectedCollegeId || undefined,
       });
+
+      if (!blob || blob.size === 0) {
+        alert('No candidate records were found to export.');
+        return;
+      }
+
+      // Check if blob is actually an error JSON
+      if (blob.type.includes('application/json')) {
+        const text = await blob.text();
+        const parsed = JSON.parse(text);
+        alert(`Export failed: ${parsed.detail || text}`);
+        return;
+      }
+
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -37,8 +51,20 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
       a.click();
       a.remove();
       window.URL.revokeObjectURL(url);
-    } catch {
-      alert('Failed to export candidate records to CSV.');
+    } catch (err: any) {
+      let message = 'Failed to export candidate records to CSV.';
+      if (err?.response?.data instanceof Blob) {
+        try {
+          const text = await err.response.data.text();
+          const parsed = JSON.parse(text);
+          if (parsed.detail) message = parsed.detail;
+        } catch {
+          // ignore
+        }
+      } else if (err?.message) {
+        message = err.message;
+      }
+      alert(message);
     } finally {
       setExportingCSV(false);
     }
@@ -257,11 +283,11 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
           backgroundColor: '#FFFFFF',
           borderRadius: '14px',
           border: '1px solid #E2E8F0',
-          overflow: 'hidden',
+          overflowX: 'auto',
           boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
         }}
       >
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+        <table style={{ width: '100%', minWidth: '960px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
           <thead>
             <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#475569' }}>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Candidate Name</th>

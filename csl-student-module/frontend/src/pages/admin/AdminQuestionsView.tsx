@@ -30,7 +30,6 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
 
   // Filters
   const [sectionFilter, setSectionFilter] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
   const [difficultyFilter, setDifficultyFilter] = useState('');
   const [activeFilter, setActiveFilter] = useState('');
   const [assessmentFilter, setAssessmentFilter] = useState(initialAssessmentId || '');
@@ -44,18 +43,15 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
   // Bulk edit field checkboxes & values
   const [bulkFields, setBulkFields] = useState({
     section_type: false,
-    category: false,
     difficulty: false,
     is_active: false,
   });
   const [bulkValues, setBulkValues] = useState<{
     section_type: 'APTITUDE' | 'CODING';
-    category: string;
     difficulty: 'EASY' | 'MEDIUM' | 'HARD';
     is_active: boolean;
   }>({
     section_type: 'APTITUDE',
-    category: '',
     difficulty: 'MEDIUM',
     is_active: true,
   });
@@ -84,7 +80,6 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
       setLoading(true);
       const data = await getAdminQuestions({
         section_type: sectionFilter || undefined,
-        category: categoryFilter || undefined,
         difficulty: difficultyFilter || undefined,
         is_active: activeFilter || undefined,
         search: search || undefined,
@@ -115,7 +110,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
 
   useEffect(() => {
     loadQuestions();
-  }, [sectionFilter, categoryFilter, difficultyFilter, activeFilter, assessmentFilter]);
+  }, [sectionFilter, difficultyFilter, activeFilter, assessmentFilter]);
 
   const handleSelectAssessment = (a: AdminAssessment) => {
     setSelectedAssessment(a);
@@ -207,13 +202,11 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
   const openBulkModal = () => {
     setBulkFields({
       section_type: false,
-      category: false,
       difficulty: false,
       is_active: false,
     });
     setBulkValues({
       section_type: 'APTITUDE',
-      category: '',
       difficulty: 'MEDIUM',
       is_active: true,
     });
@@ -224,7 +217,6 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
     e.preventDefault();
     const hasField =
       bulkFields.section_type ||
-      bulkFields.category ||
       bulkFields.difficulty ||
       bulkFields.is_active;
 
@@ -235,19 +227,11 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
 
     const payload: {
       section_type?: 'APTITUDE' | 'CODING';
-      category?: string;
       difficulty?: 'EASY' | 'MEDIUM' | 'HARD';
       is_active?: boolean;
     } = {};
 
     if (bulkFields.section_type) payload.section_type = bulkValues.section_type;
-    if (bulkFields.category) {
-      if (!bulkValues.category.trim()) {
-        alert('Please enter a category value or uncheck the Category field.');
-        return;
-      }
-      payload.category = bulkValues.category.trim();
-    }
     if (bulkFields.difficulty) payload.difficulty = bulkValues.difficulty;
     if (bulkFields.is_active) payload.is_active = bulkValues.is_active;
 
@@ -1135,7 +1119,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search question prompt or category..."
+              placeholder="Search question prompt..."
               style={{
                 padding: '9px 12px 9px 36px',
                 borderRadius: '8px',
@@ -1183,21 +1167,6 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
           <option value="APTITUDE">Aptitude</option>
           <option value="CODING">Coding Fundamentals</option>
         </select>
-
-        <input
-          type="text"
-          value={categoryFilter}
-          onChange={(e) => setCategoryFilter(e.target.value)}
-          placeholder="Topic / Category..."
-          style={{
-            padding: '9px 12px',
-            borderRadius: '8px',
-            border: '1px solid #CBD5E1',
-            fontSize: '13px',
-            width: '160px',
-            outlineColor: '#1455B8',
-          }}
-        />
 
         <select
           value={difficultyFilter}
@@ -1260,11 +1229,10 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
           ))}
         </select>
 
-        {(sectionFilter || difficultyFilter || activeFilter || categoryFilter || assessmentFilter || search) && (
+        {(sectionFilter || difficultyFilter || activeFilter || assessmentFilter || search) && (
           <button
             onClick={() => {
               setSectionFilter('');
-              setCategoryFilter('');
               setDifficultyFilter('');
               setActiveFilter('');
               setAssessmentFilter('');
@@ -1473,8 +1441,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                 />
               </th>
               <th style={{ padding: '12px 14px', width: '60px' }}>ID ↕</th>
-              <th style={{ padding: '12px 14px', width: '100px' }}>Section ↕</th>
-              <th style={{ padding: '12px 14px', width: '160px' }}>Category ↕</th>
+              <th style={{ padding: '12px 14px', width: '110px' }}>Section ↕</th>
               <th style={{ padding: '12px 14px' }}>Question Prompt</th>
               <th style={{ padding: '12px 14px', width: '70px', textAlign: 'center' }}>Correct ↕</th>
               <th style={{ padding: '12px 14px', width: '90px', textAlign: 'center' }}>Difficulty ↕</th>
@@ -1485,13 +1452,13 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={9} style={{ padding: '36px', textAlign: 'center', color: '#6B7280' }}>
+                <td colSpan={8} style={{ padding: '36px', textAlign: 'center', color: '#6B7280' }}>
                   Loading questions from bank...
                 </td>
               </tr>
             ) : paginatedQuestions.length === 0 ? (
               <tr>
-                <td colSpan={9} style={{ padding: '36px', textAlign: 'center', color: '#6B7280' }}>
+                <td colSpan={8} style={{ padding: '36px', textAlign: 'center', color: '#6B7280' }}>
                   No questions found matching your filter criteria.
                 </td>
               </tr>
@@ -1539,9 +1506,6 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                       >
                         {q.section_type === 'CODING' ? 'Coding' : 'Aptitude'}
                       </span>
-                    </td>
-                    <td style={{ padding: '12px 14px', fontWeight: 600, color: '#334155' }}>
-                      {q.category}
                     </td>
                     <td style={{ padding: '12px 14px', color: '#0F172A' }}>
                       <div style={{ fontWeight: 600, marginBottom: '2px', lineHeight: 1.45 }}>
@@ -1859,43 +1823,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                 </select>
               </div>
 
-              {/* Field 2: Category */}
-              <div
-                style={{
-                  padding: '12px 14px',
-                  borderRadius: '10px',
-                  border: `1.5px solid ${bulkFields.category ? '#1455B8' : '#E2E8F0'}`,
-                  backgroundColor: bulkFields.category ? 'rgba(20, 85, 184, 0.03)' : '#FAF7F3',
-                }}
-              >
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
-                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 700, color: '#0B2E6F', cursor: 'pointer' }}>
-                    <input
-                      type="checkbox"
-                      checked={bulkFields.category}
-                      onChange={(e) => setBulkFields({ ...bulkFields, category: e.target.checked })}
-                      style={{ width: '16px', height: '16px', accentColor: '#1455B8' }}
-                    />
-                    <span>Update Category / Topic</span>
-                  </label>
-                </div>
-                <input
-                  type="text"
-                  disabled={!bulkFields.category}
-                  value={bulkValues.category}
-                  onChange={(e) => setBulkValues({ ...bulkValues, category: e.target.value })}
-                  placeholder="e.g. Data Structures, Verbal Reasoning"
-                  style={{
-                    width: '100%',
-                    padding: '8px 10px',
-                    borderRadius: '6px',
-                    border: '1px solid #CBD5E1',
-                    fontSize: '13px',
-                    boxSizing: 'border-box',
-                    backgroundColor: bulkFields.category ? '#FFFFFF' : '#F1F5F9',
-                  }}
-                />
-              </div>
+
 
               {/* Field 3: Difficulty */}
               <div
@@ -2054,7 +1982,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
 
             <p style={{ fontSize: '13px', color: '#64748B', lineHeight: 1.5, margin: '0 0 16px 0' }}>
               Upload a valid CSV file with columns:{' '}
-              <code>prompt, section_type, category, difficulty, option_a, option_b, option_c, option_d, correct_option, explanation</code>.
+              <code>prompt, section_type, difficulty, option_a, option_b, option_c, option_d, correct_option, explanation</code> (category is optional).
             </p>
 
             <form onSubmit={handleImportSubmit}>

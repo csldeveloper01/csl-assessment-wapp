@@ -299,11 +299,11 @@ export function AdminIntegrityEventsView({ onReviewAttempt }: AdminIntegrityEven
           backgroundColor: '#FFFFFF',
           borderRadius: '14px',
           border: '1px solid #E2E8F0',
-          overflow: 'hidden',
+          overflowX: 'auto',
           boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
         }}
       >
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+        <table style={{ width: '100%', minWidth: '960px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
           <thead>
             <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#475569' }}>
               <th style={{ padding: '12px 16px', width: '180px', fontWeight: 700 }}>Event Type</th>

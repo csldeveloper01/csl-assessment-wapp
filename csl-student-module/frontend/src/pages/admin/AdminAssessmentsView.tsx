@@ -3,6 +3,7 @@ import {
   getAdminAssessments,
   getAdminAssessmentDetail,
   createAdminAssessment,
+  updateAdminAssessment,
   deleteAdminAssessment,
   prepareAdminAssessment,
   openAdminAssessment,
@@ -29,6 +30,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
 
   // Modals state
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
 
@@ -63,6 +65,24 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
   });
   const [createError, setCreateError] = useState('');
   const [createSubmitting, setCreateSubmitting] = useState(false);
+
+  // Edit Form State
+  const [editForm, setEditForm] = useState({
+    id: '',
+    code: '',
+    title: '',
+    description: '',
+    duration_minutes: 60,
+    total_marks: 50,
+    aptitude_count: 25,
+    coding_count: 25,
+    max_attempts: 1,
+    max_tab_switches_warning: 2,
+    auto_submit_on_tab_limit: true,
+    close_policy: 'ALLOW_FINISH' as 'ALLOW_FINISH' | 'STRICT_CUTOFF',
+  });
+  const [editError, setEditError] = useState('');
+  const [editSubmitting, setEditSubmitting] = useState(false);
   const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   const fetchAssessments = async () => {
@@ -260,6 +280,82 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
     }
   };
 
+  const handleOpenEdit = (assessment: AdminAssessment) => {
+    setEditError('');
+    setEditForm({
+      id: assessment.id,
+      code: assessment.code,
+      title: assessment.title,
+      description: assessment.description || '',
+      duration_minutes: assessment.duration_minutes,
+      total_marks: assessment.total_marks,
+      aptitude_count: assessment.aptitude_count,
+      coding_count: assessment.coding_count,
+      max_attempts: assessment.max_attempts,
+      max_tab_switches_warning: assessment.max_tab_switches_warning,
+      auto_submit_on_tab_limit: assessment.auto_submit_on_tab_limit,
+      close_policy: (assessment.close_policy as any) || 'ALLOW_FINISH',
+    });
+    setShowEditModal(true);
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setEditError('');
+    if (!editForm.title.trim()) {
+      setEditError('Assessment title is required.');
+      return;
+    }
+    if (editForm.duration_minutes < 1) {
+      setEditError('Duration must be at least 1 minute.');
+      return;
+    }
+    const apt = Number(editForm.aptitude_count);
+    const cod = Number(editForm.coding_count);
+    if (apt < 0 || cod < 0 || (apt + cod < 1)) {
+      setEditError('Assessment must include at least 1 Aptitude or Coding question.');
+      return;
+    }
+    const total = apt + cod;
+    setEditSubmitting(true);
+    try {
+      const updated = await updateAdminAssessment(editForm.id, {
+        code: editForm.code.trim().toUpperCase(),
+        title: editForm.title.trim(),
+        description: editForm.description,
+        duration_minutes: Number(editForm.duration_minutes),
+        aptitude_count: apt,
+        coding_count: cod,
+        total_marks: total,
+        max_attempts: Number(editForm.max_attempts),
+        max_tab_switches_warning: Number(editForm.max_tab_switches_warning),
+        auto_submit_on_tab_limit: editForm.auto_submit_on_tab_limit,
+        close_policy: editForm.close_policy,
+      });
+      setShowEditModal(false);
+      fetchAssessments();
+      if (selectedAssessment?.id === editForm.id) {
+        setSelectedAssessment((prev) => (prev ? { ...prev, ...updated } : null));
+        if (assessmentDetail?.id === editForm.id) {
+          handleOpenDetail(updated);
+        }
+      }
+      setActionMessage({ text: `Assessment "${editForm.title}" updated successfully.`, type: 'success' });
+    } catch (err: any) {
+      const detailMsg =
+        err.response?.data?.detail ||
+        err.response?.data?.non_field_errors?.[0] ||
+        (err.response?.data && typeof err.response.data === 'object'
+          ? Object.entries(err.response.data)
+              .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+              .join(' | ')
+          : 'Failed to update assessment.');
+      setEditError(detailMsg);
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
   // Metrics
   const totalCount = assessments.length;
   const openCount = assessments.filter((a) => a.is_open).length;
@@ -449,7 +545,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
       </div>
 
       {/* ─── ASSESSMENTS TABLE ──────────────────────────────────────── */}
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
+      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', overflowX: 'auto', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
         {loading ? (
           <div style={{ padding: '48px', textAlign: 'center', color: '#64748B', fontWeight: 600 }}>
             Loading assessments...
@@ -460,7 +556,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
             <p style={{ margin: 0, fontSize: '14px' }}>Click "Create New Assessment" to configure your first round.</p>
           </div>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
+          <table style={{ width: '100%', minWidth: '1100px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
             <thead>
               <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', width: '120px' }}>CODE</th>
@@ -686,6 +782,23 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                         }}
                       >
                         Question Pool
+                      </button>
+
+                      <button
+                        onClick={() => handleOpenEdit(a)}
+                        title="Edit assessment parameters, duration, questions, and policies"
+                        style={{
+                          backgroundColor: '#FEF3C7',
+                          color: '#92400E',
+                          border: '1px solid #FDE68A',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Edit
                       </button>
 
                       <button
@@ -941,6 +1054,193 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
         </div>
       )}
 
+      {/* ─── EDIT ASSESSMENT MODAL ───────────────────────────────────── */}
+      {showEditModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              padding: '28px',
+              width: '680px',
+              maxWidth: '92vw',
+              maxHeight: '92vh',
+              overflowY: 'auto',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px' }}>
+              <div>
+                <h2 style={{ fontSize: '18px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
+                  Edit Assessment: {editForm.title}
+                </h2>
+                <span style={{ fontSize: '13px', color: '#64748B' }}>
+                  Configure independent timing, marks, section question counts, and proctoring constraints.
+                </span>
+              </div>
+              <button
+                onClick={() => setShowEditModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#94A3B8' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {editError && (
+              <div style={{ padding: '10px 14px', backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5', color: '#B91C1C', borderRadius: '6px', fontSize: '13px', marginBottom: '16px' }}>
+                {editError}
+              </div>
+            )}
+
+            <form onSubmit={handleEditSubmit}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '14px', marginBottom: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                    Assessment Code *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editForm.code}
+                    onChange={(e) => setEditForm({ ...editForm, code: e.target.value.toUpperCase() })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box', textTransform: 'uppercase' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                    Title *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={editForm.title}
+                    onChange={(e) => setEditForm({ ...editForm, title: e.target.value })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                </div>
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Candidate Instructions / Description
+                </label>
+                <textarea
+                  rows={2}
+                  value={editForm.description}
+                  onChange={(e) => setEditForm({ ...editForm, description: e.target.value })}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '13px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '14px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                    Duration (Minutes) *
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    required
+                    value={editForm.duration_minutes}
+                    onChange={(e) => setEditForm({ ...editForm, duration_minutes: Number(e.target.value) })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                  <span style={{ fontSize: '11px', color: '#64748B' }}>Timer for each candidate</span>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                    Aptitude Count *
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    required
+                    value={editForm.aptitude_count}
+                    onChange={(e) => setEditForm({ ...editForm, aptitude_count: Number(e.target.value) })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                  <span style={{ fontSize: '11px', color: '#64748B' }}>Aptitude questions picked</span>
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                    Coding Count *
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    required
+                    value={editForm.coding_count}
+                    onChange={(e) => setEditForm({ ...editForm, coding_count: Number(e.target.value) })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                  <span style={{ fontSize: '11px', color: '#64748B' }}>Coding questions picked</span>
+                </div>
+              </div>
+
+              <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '12px 14px', marginBottom: '14px', fontSize: '13px', color: '#475569' }}>
+                <span style={{ fontWeight: 700, color: '#0B2E6F' }}>Computed Total Marks:</span>{' '}
+                <strong>{Number(editForm.aptitude_count || 0) + Number(editForm.coding_count || 0)}</strong> marks (1 mark per question across sections)
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                    Permitted Tab Switch Warnings
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    value={editForm.max_tab_switches_warning}
+                    onChange={(e) => setEditForm({ ...editForm, max_tab_switches_warning: Number(e.target.value) })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                    Close Cutoff Policy
+                  </label>
+                  <select
+                    value={editForm.close_policy}
+                    onChange={(e) => setEditForm({ ...editForm, close_policy: e.target.value as any })}
+                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+                  >
+                    <option value="ALLOW_FINISH">Allow in-progress attempts to finish</option>
+                    <option value="STRICT_CUTOFF">Strict cutoff (terminate active attempts immediately)</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowEditModal(false)}
+                  style={{ backgroundColor: '#F1F5F9', color: '#475569', border: 'none', borderRadius: '6px', padding: '10px 16px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={editSubmitting}
+                  style={{ backgroundColor: '#0B2E6F', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '10px 20px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  {editSubmitting ? 'Saving Changes...' : 'Save Assessment Settings'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
       {/* ─── CLOSE ASSESSMENT CONFIRMATION MODAL ─────────────────────── */}
       {showCloseModal && selectedAssessment && (
         <div
@@ -1139,8 +1439,31 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                     </div>
 
                     <div style={{ backgroundColor: '#F8FAFC', padding: '14px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '16px', fontSize: '13px' }}>
-                      <div style={{ fontWeight: 700, color: '#334155', marginBottom: '6px' }}>Proctoring & Rules</div>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                        <div style={{ fontWeight: 700, color: '#334155' }}>Proctoring & Rules Configuration</div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowDetailModal(false);
+                            handleOpenEdit(assessmentDetail);
+                          }}
+                          style={{
+                            backgroundColor: '#FEF3C7',
+                            color: '#92400E',
+                            border: '1px solid #FDE68A',
+                            padding: '4px 10px',
+                            borderRadius: '5px',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          ✎ Edit Assessment Parameters
+                        </button>
+                      </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
+                        <div>Duration: <strong>{assessmentDetail.duration_minutes} Minutes</strong></div>
+                        <div>Total Marks: <strong>{assessmentDetail.total_marks} Marks ({assessmentDetail.aptitude_count} Aptitude + {assessmentDetail.coding_count} Coding)</strong></div>
                         <div>Max Tab Warnings: <strong>{assessmentDetail.max_tab_switches_warning}</strong> (Auto-submit: {assessmentDetail.auto_submit_on_tab_limit ? 'Yes' : 'No'})</div>
                         <div>Max Attempts per Student: <strong>{assessmentDetail.max_attempts}</strong></div>
                         <div>Close Policy: <strong>{assessmentDetail.close_policy}</strong></div>

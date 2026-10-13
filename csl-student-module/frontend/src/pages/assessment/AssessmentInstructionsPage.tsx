@@ -111,31 +111,28 @@ export function AssessmentInstructionsPage() {
     setLoading(true);
 
     try {
-      // 1. Request browser fullscreen FIRST
+      // 1. Request browser fullscreen on this explicit user gesture
       if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen();
+        try {
+          const docEl = document.documentElement as any;
+          if (docEl.requestFullscreen) {
+            await docEl.requestFullscreen();
+          } else if (docEl.webkitRequestFullscreen) {
+            await docEl.webkitRequestFullscreen();
+          } else if (docEl.msRequestFullscreen) {
+            await docEl.msRequestFullscreen();
+          }
+        } catch (fsErr) {
+          console.warn('Initial requestFullscreen was delayed or restricted by browser:', fsErr);
+        }
       }
 
-      // Verify fullscreen was actually granted
-      if (!document.fullscreenElement) {
-        throw new Error('Fullscreen request was not granted by the browser.');
-      }
-
-      // 2. Only start assessment after fullscreen is confirmed
+      // 2. Start assessment and transition to exam environment
       const targetAssessmentId = selectedAssessment?.id || sessionStorage.getItem('csl_assessment_id') || undefined;
       const attempt = await startAssessment(targetAssessmentId);
       navigate(`/assessment/exam/${attempt.id}`);
     } catch (err: unknown) {
-      console.error('Failed to initialize fullscreen assessment:', err);
-
-      // Exit fullscreen if partial entry happened
-      if (document.fullscreenElement) {
-        try {
-          await document.exitFullscreen();
-        } catch {
-          // ignore
-        }
-      }
+      console.error('Failed to initialize assessment:', err);
 
       if (typeof err === 'object' && err !== null && 'response' in err) {
         const axErr = err as { response?: { data?: { detail?: string; bank_error?: string } } };
@@ -145,13 +142,9 @@ export function AssessmentInstructionsPage() {
           'Failed to initialize assessment session.';
         setError(msg);
       } else if (err instanceof Error) {
-        setError(
-          `Fullscreen is required to start this assessment. ${err.message || 'Please permit fullscreen access in your browser and try again.'}`
-        );
+        setError(err.message || 'Failed to start assessment. Please try again.');
       } else {
-        setError(
-          'Fullscreen access was declined or blocked by your browser. Please allow fullscreen to start the assessment.'
-        );
+        setError('Failed to initialize assessment session. Please retry.');
       }
     } finally {
       setLoading(false);

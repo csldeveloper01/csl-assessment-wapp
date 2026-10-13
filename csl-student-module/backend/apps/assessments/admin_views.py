@@ -559,7 +559,7 @@ class AdminCandidateExportCSVView(APIView):
     def get(self, request):
         queryset = (
             Candidate.objects.select_related("college_ref")
-            .prefetch_related("college_ref__assigned_assessments")
+            .prefetch_related("college_ref__assigned_assessments", "attempts__assessment")
             .all()
             .order_by("-created_at")
         )
@@ -594,6 +594,8 @@ class AdminCandidateExportCSVView(APIView):
         timestamp_str = timezone.now().strftime("%Y%m%d_%H%M%S")
         response = HttpResponse(content_type="text/csv; charset=utf-8")
         response["Content-Disposition"] = f'attachment; filename="csl_candidates_{timestamp_str}.csv"'
+        # Write UTF-8 BOM so Excel and spreadsheet viewers open Unicode text cleanly
+        response.write('\ufeff')
 
         def sanitize_cell(val):
             """Protect against spreadsheet formula injection."""
@@ -617,14 +619,49 @@ class AdminCandidateExportCSVView(APIView):
             "Status",
             "Registered Timestamp",
             "Assigned Assessments",
+            "Latest Assessment",
+            "Attempt Status",
+            "Total Score",
+            "Percentage (%)",
+            "Submitted Timestamp",
         ])
 
-        for cand in queryset.iterator():
+        for cand in queryset.iterator(chunk_size=500):
             college_code = cand.college_ref.code if cand.college_ref else ""
             college_name = cand.college_ref.name if cand.college_ref else cand.college
             assigned_codes = []
             if cand.college_ref:
                 assigned_codes = [a.code for a in cand.college_ref.assigned_assessments.all()]
+
+            latest_attempt = cand.attempts.all().first()
+            assessment_name = ""
+            attempt_status = "NOT_STARTED"
+            score_display = ""
+            percentage_display = ""
+            submitted_str = ""
+
+            if latest_attempt:
+                attempt_status = latest_attempt.state
+                if latest_attempt.assessment:
+                    assessment_name = f"{latest_attempt.assessment.title} ({latest_attempt.assessment.code})"
+                elif latest_attempt.config:
+                    assessment_name = latest_attempt.config.title
+
+                if latest_attempt.state in [
+                    AssessmentAttempt.State.SUBMITTED,
+                    AssessmentAttempt.State.TIMED_OUT,
+                    AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+                ]:
+                    max_m = (
+                        latest_attempt.assessment.total_marks
+                        if latest_attempt.assessment
+                        else (latest_attempt.config.total_marks if latest_attempt.config else 50)
+                    )
+                    score_display = f"{latest_attempt.total_score} / {max_m}"
+                    percentage_display = f"{latest_attempt.percentage:.2f}%"
+
+                if latest_attempt.submitted_at:
+                    submitted_str = latest_attempt.submitted_at.strftime("%Y-%m-%d %H:%M:%S")
 
             writer.writerow([
                 sanitize_cell(cand.full_name),
@@ -638,6 +675,11 @@ class AdminCandidateExportCSVView(APIView):
                 "Active" if cand.is_active else "Deactivated",
                 cand.created_at.strftime("%Y-%m-%d %H:%M:%S") if cand.created_at else "",
                 sanitize_cell(", ".join(assigned_codes)),
+                sanitize_cell(assessment_name),
+                sanitize_cell(attempt_status),
+                sanitize_cell(score_display),
+                sanitize_cell(percentage_display),
+                sanitize_cell(submitted_str),
             ])
 
         return response
@@ -862,7 +904,7 @@ class AdminQuestionImportCSVView(APIView):
             return Response({"detail": "Please supply a CSV file or csv_content string."}, status=status.HTTP_400_BAD_REQUEST)
 
         reader = csv.DictReader(io_string)
-        required_fields = ["prompt", "section_type", "category", "option_a", "option_b", "option_c", "option_d", "correct_option"]
+        required_fields = ["prompt", "section_type", "option_a", "option_b", "option_c", "option_d", "correct_option"]
 
         if not reader.fieldnames:
             return Response({"detail": "CSV file is empty or missing headers."}, status=status.HTTP_400_BAD_REQUEST)
@@ -891,11 +933,13 @@ class AdminQuestionImportCSVView(APIView):
                 if diff not in ["EASY", "MEDIUM", "HARD"]:
                     diff = "MEDIUM"
 
+                category_val = (row.get("category") or "").strip() or sec
+
                 try:
                     q = QuestionBank.objects.create(
                         prompt=row["prompt"].strip(),
                         section_type=sec,
-                        category=row["category"].strip(),
+                        category=category_val,
                         difficulty=diff,
                         option_a=row["option_a"].strip(),
                         option_b=row["option_b"].strip(),

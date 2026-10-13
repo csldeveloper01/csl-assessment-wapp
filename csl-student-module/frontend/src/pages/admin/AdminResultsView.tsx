@@ -132,18 +132,18 @@ export function AdminResultsView({ onReviewAttempt }: AdminResultsViewProps) {
           backgroundColor: '#FFFFFF',
           borderRadius: '14px',
           border: '1px solid #E2E8F0',
-          overflow: 'hidden',
+          overflowX: 'auto',
           boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
         }}
       >
-        <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+        <table style={{ width: '100%', minWidth: '950px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
           <thead>
             <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#475569' }}>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Candidate Details</th>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Register / Roll No</th>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Institution</th>
-              <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'center' }}>Aptitude (25)</th>
-              <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'center' }}>Coding (25)</th>
+              <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'center' }}>Aptitude</th>
+              <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'center' }}>Coding</th>
               <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'center' }}>Total Score</th>
               <th style={{ padding: '12px 16px', fontWeight: 700, textAlign: 'center' }}>Percentage</th>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Status</th>
@@ -203,7 +203,7 @@ export function AdminResultsView({ onReviewAttempt }: AdminResultsViewProps) {
                       </span>
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 800, color: '#0B2E6F', fontSize: '14px' }}>
-                      {res.total_score} <span style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 500 }}>/ 50</span>
+                      {res.total_score} <span style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 500 }}>/ {res.assessment_total_marks ?? 50}</span>
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'center' }}>
                       <span

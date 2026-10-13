@@ -16,7 +16,7 @@ class QuestionBank(models.Model):
 
     prompt = models.TextField(help_text="MCQ question text or problem statement")
     section_type = models.CharField(max_length=20, choices=SectionType.choices, db_index=True)
-    category = models.CharField(max_length=100, db_index=True, help_text="e.g. Quantitative, Logical, Python, OOP")
+    category = models.CharField(max_length=100, blank=True, default="", db_index=True, help_text="Optional legacy classification")
     difficulty = models.CharField(max_length=20, choices=Difficulty.choices, default=Difficulty.MEDIUM, db_index=True)
     assessment_type = models.CharField(
         max_length=50,
@@ -45,14 +45,14 @@ class QuestionBank(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        ordering = ["section_type", "category", "id"]
+        ordering = ["section_type", "difficulty", "id"]
         indexes = [
             models.Index(fields=["section_type", "is_active"]),
             models.Index(fields=["section_type", "difficulty", "is_active"]),
         ]
 
     def __str__(self):
-        return f"[{self.section_type}] {self.category} ({self.difficulty}): {self.prompt[:60]}"
+        return f"[{self.section_type}] ({self.difficulty}): {self.prompt[:60]}"
 
 
 class AssessmentConfig(models.Model):

@@ -437,10 +437,10 @@ class AdminQuestionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Question prompt cannot be empty.")
         return value.strip()
 
+    category = serializers.CharField(required=False, allow_blank=True, default="")
+
     def validate_category(self, value):
-        if not value or not value.strip():
-            raise serializers.ValidationError("Category cannot be empty.")
-        return value.strip()
+        return value.strip() if value else ""
 
     def validate_correct_option(self, value):
         val = value.strip().upper()
@@ -650,7 +650,8 @@ class AdminQuestionBulkUpdateSerializer(serializers.Serializer):
     category = serializers.CharField(
         max_length=100,
         required=False,
-        allow_blank=False,
+        allow_blank=True,
+        default="",
     )
     difficulty = serializers.ChoiceField(
         choices=QuestionBank.Difficulty.choices,
@@ -661,10 +662,10 @@ class AdminQuestionBulkUpdateSerializer(serializers.Serializer):
     )
 
     def validate(self, data):
-        update_fields = [k for k in ["section_type", "category", "difficulty", "is_active"] if k in data]
+        update_fields = [k for k in ["section_type", "difficulty", "is_active", "category"] if k in data]
         if not update_fields:
             raise serializers.ValidationError(
-                "At least one update field (section_type, category, difficulty, or is_active) must be specified."
+                "At least one update field (section_type, difficulty, or is_active) must be specified."
             )
         return data
 
@@ -759,7 +760,14 @@ class AdminResultSerializer(serializers.ModelSerializer):
             "fullscreen_exit_count",
             "is_flagged",
             "flag_reason",
+            "assessment_total_marks",
+            "assessment_aptitude_count",
+            "assessment_coding_count",
         ]
+
+    assessment_total_marks = serializers.SerializerMethodField()
+    assessment_aptitude_count = serializers.SerializerMethodField()
+    assessment_coding_count = serializers.SerializerMethodField()
 
     def get_assessment_title(self, obj):
         if obj.assessment:
@@ -770,3 +778,18 @@ class AdminResultSerializer(serializers.ModelSerializer):
         if obj.assessment:
             return obj.assessment.code
         return "CSL-INITIAL-01"
+
+    def get_assessment_total_marks(self, obj):
+        if obj.assessment:
+            return obj.assessment.total_marks
+        return obj.config.total_marks if obj.config else 50
+
+    def get_assessment_aptitude_count(self, obj):
+        if obj.assessment:
+            return obj.assessment.aptitude_count
+        return obj.config.aptitude_count if obj.config else 25
+
+    def get_assessment_coding_count(self, obj):
+        if obj.assessment:
+            return obj.assessment.coding_count
+        return obj.config.coding_count if obj.config else 25

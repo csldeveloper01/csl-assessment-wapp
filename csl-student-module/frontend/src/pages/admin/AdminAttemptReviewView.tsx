@@ -685,7 +685,6 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
                     >
                       {q.section_type}
                     </span>
-                    <span style={{ fontSize: '11px', color: '#64748B' }}>Topic: {q.category}</span>
                   </div>
 
                   <div>

@@ -298,13 +298,16 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
         apt_correct = sum(1 for s in apt_snapshots if s.is_correct is True)
         apt_unattempted = sum(1 for s in apt_snapshots if not (s.selected_option and s.selected_option.strip()))
         apt_incorrect = max(0, len(apt_snapshots) - apt_correct - apt_unattempted)
-        apt_total = len(apt_snapshots) or 25
+        apt_default = obj.assessment.aptitude_count if obj.assessment else 25
+        cod_default = obj.assessment.coding_count if obj.assessment else 25
+
+        apt_total = len(apt_snapshots) or apt_default
         apt_pct = round((apt_correct / float(apt_total)) * 100.0, 1) if apt_total else 0.0
 
         cod_correct = sum(1 for s in cod_snapshots if s.is_correct is True)
         cod_unattempted = sum(1 for s in cod_snapshots if not (s.selected_option and s.selected_option.strip()))
         cod_incorrect = max(0, len(cod_snapshots) - cod_correct - cod_unattempted)
-        cod_total = len(cod_snapshots) or 25
+        cod_total = len(cod_snapshots) or cod_default
         cod_pct = round((cod_correct / float(cod_total)) * 100.0, 1) if cod_total else 0.0
 
         time_taken_seconds = 0

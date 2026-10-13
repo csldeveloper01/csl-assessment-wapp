@@ -112,7 +112,7 @@ export function AdminUsersView() {
       )}
 
       {/* ─── USERS TABLE ────────────────────────────────────────────── */}
-      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', overflow: 'hidden', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
+      <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', overflowX: 'auto', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
         {loading ? (
           <div style={{ padding: '48px', textAlign: 'center', color: '#64748B', fontWeight: 600 }}>
             Loading administrators...
@@ -122,7 +122,7 @@ export function AdminUsersView() {
             No staff accounts found.
           </div>
         ) : (
-          <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
+          <table style={{ width: '100%', minWidth: '850px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
             <thead>
               <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569' }}>USER / NAME</th>
