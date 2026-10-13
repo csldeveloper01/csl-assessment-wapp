@@ -12,7 +12,11 @@ import {
 } from '../../api/admin';
 import { AdminQuestionEditorModal } from './AdminQuestionEditorModal';
 
-export function AdminQuestionsView() {
+interface AdminQuestionsViewProps {
+  initialAssessmentId?: string;
+}
+
+export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewProps) {
   const [questions, setQuestions] = useState<AdminQuestion[]>([]);
   const [assessments, setAssessments] = useState<AdminAssessment[]>([]);
   const [loading, setLoading] = useState(true);
@@ -20,7 +24,7 @@ export function AdminQuestionsView() {
   // Hierarchy Navigation: Question Bank -> Assessment Selection -> Questions
   const [selectedAssessment, setSelectedAssessment] = useState<AdminAssessment | null>(null);
   const [assessmentSearch, setAssessmentSearch] = useState('');
-  const [importAssessmentId, setImportAssessmentId] = useState<string>('');
+  const [importAssessmentId, setImportAssessmentId] = useState<string>(initialAssessmentId || '');
   const [viewAllQuestions, setViewAllQuestions] = useState(false);
   const [assessmentFilterStatus, setAssessmentFilterStatus] = useState<'ALL' | 'SUFFICIENT' | 'INSUFFICIENT'>('ALL');
 
@@ -29,7 +33,7 @@ export function AdminQuestionsView() {
   const [categoryFilter, setCategoryFilter] = useState('');
   const [difficultyFilter, setDifficultyFilter] = useState('');
   const [activeFilter, setActiveFilter] = useState('');
-  const [assessmentFilter, setAssessmentFilter] = useState('');
+  const [assessmentFilter, setAssessmentFilter] = useState(initialAssessmentId || '');
   const [search, setSearch] = useState('');
 
   // Bulk Selection State
@@ -96,8 +100,18 @@ export function AdminQuestionsView() {
   };
 
   useEffect(() => {
-    getAdminAssessments().then(setAssessments).catch(() => {});
-  }, []);
+    getAdminAssessments().then((list) => {
+      setAssessments(list);
+      if (initialAssessmentId) {
+        const match = list.find((a) => a.id === initialAssessmentId);
+        if (match) {
+          setSelectedAssessment(match);
+          setAssessmentFilter(match.id);
+          setImportAssessmentId(match.id);
+        }
+      }
+    }).catch(() => {});
+  }, [initialAssessmentId]);
 
   useEffect(() => {
     loadQuestions();

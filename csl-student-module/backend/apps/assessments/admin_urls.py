@@ -32,11 +32,13 @@ from .admin_views import (
     AdminIntegrityEventsView,
     AdminIntegrityEventReviewActionView,
     AdminGlobalAuditLogsView,
+    AdminUserManagementView,
 )
 
 urlpatterns = [
     path("me/", AdminMeView.as_view(), name="admin-me"),
     path("stats/", AdminStatsView.as_view(), name="admin-stats"),
+    path("users/", AdminUserManagementView.as_view(), name="admin-users"),
     
     # Colleges
     path("colleges/", AdminCollegeListView.as_view(), name="admin-colleges"),

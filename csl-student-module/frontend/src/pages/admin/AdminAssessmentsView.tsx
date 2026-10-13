@@ -3,6 +3,7 @@ import {
   getAdminAssessments,
   getAdminAssessmentDetail,
   createAdminAssessment,
+  deleteAdminAssessment,
   prepareAdminAssessment,
   openAdminAssessment,
   closeAdminAssessment,
@@ -15,7 +16,11 @@ import {
   type AdminCollege,
 } from '../../api/admin';
 
-export function AdminAssessmentsView() {
+interface AdminAssessmentsViewProps {
+  onNavigateToQuestions?: (assessmentId?: string) => void;
+}
+
+export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessmentsViewProps) {
   const [assessments, setAssessments] = useState<AdminAssessment[]>([]);
   const [colleges, setColleges] = useState<AdminCollege[]>([]);
   const [loading, setLoading] = useState(true);
@@ -155,6 +160,28 @@ export function AdminAssessmentsView() {
       setActionMessage({ text: err.response?.data?.detail || 'Failed to close assessment.', type: 'error' });
     } finally {
       setClosing(false);
+    }
+  };
+
+  const handleDeleteAssessment = async (assessment: AdminAssessment) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete '${assessment.title}' (${assessment.code})?\n\nThis action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setActionMessage(null);
+    try {
+      const res = await deleteAdminAssessment(assessment.id);
+      setActionMessage({ text: res.message, type: 'success' });
+      setAssessments((prev) => prev.filter((a) => a.id !== assessment.id));
+      if (selectedAssessment?.id === assessment.id) {
+        setShowDetailModal(false);
+        setSelectedAssessment(null);
+      }
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to delete assessment.';
+      setActionMessage({ text: msg, type: 'error' });
+      alert(`Delete Error: ${msg}`);
     }
   };
 
@@ -641,6 +668,27 @@ export function AdminAssessmentsView() {
                       )}
 
                       <button
+                        onClick={() => {
+                          if (onNavigateToQuestions) {
+                            onNavigateToQuestions(a.id);
+                          }
+                        }}
+                        title="View and manage Question Pool for this assessment"
+                        style={{
+                          backgroundColor: '#EEF2FF',
+                          color: '#4338CA',
+                          border: '1px solid #C7D2FE',
+                          padding: '6px 10px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Question Pool
+                      </button>
+
+                      <button
                         onClick={() => handleOpenDetail(a)}
                         title="Manage colleges, parameters, and audit trail"
                         style={{
@@ -655,6 +703,23 @@ export function AdminAssessmentsView() {
                         }}
                       >
                         Details
+                      </button>
+
+                      <button
+                        onClick={() => handleDeleteAssessment(a)}
+                        title="Permanently delete assessment"
+                        style={{
+                          backgroundColor: '#FFF1F2',
+                          color: '#BE123C',
+                          border: '1px solid #FDA4AF',
+                          padding: '6px 10px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Delete
                       </button>
                     </div>
                   </td>

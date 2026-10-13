@@ -3,6 +3,7 @@ import {
   getAdminColleges,
   createAdminCollege,
   toggleAdminCollegeStatus,
+  deleteAdminCollege,
   importAdminCollegeCandidates,
   getAdminCollegeDetail,
   type AdminCollege,
@@ -75,8 +76,29 @@ export function AdminCollegesView() {
       setColleges((prev) =>
         prev.map((c) => (c.id === college.id ? { ...c, is_active: res.is_active } : c))
       );
-    } catch (err) {
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to toggle status.';
+      alert(`Error toggling status: ${msg}`);
       console.error('Failed to toggle status:', err);
+    }
+  };
+
+  const handleDeleteCollege = async (college: AdminCollege) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete '${college.name}' (${college.code})?\n\nThis will also remove student registrations belonging to this institution if they haven't taken an assessment.`
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteAdminCollege(college.id);
+      setColleges((prev) => prev.filter((c) => c.id !== college.id));
+      if (selectedCollege?.id === college.id) {
+        setShowDetailModal(false);
+        setSelectedCollege(null);
+      }
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || err.message || 'Failed to delete college.';
+      alert(`Delete Error: ${msg}`);
     }
   };
 
@@ -407,6 +429,22 @@ export function AdminCollegesView() {
                         }}
                       >
                         {col.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteCollege(col)}
+                        title="Delete institution permanently"
+                        style={{
+                          backgroundColor: '#FFF1F2',
+                          color: '#BE123C',
+                          border: '1px solid #FDA4AF',
+                          padding: '6px 10px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Delete
                       </button>
                     </div>
                   </td>

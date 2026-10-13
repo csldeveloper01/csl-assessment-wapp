@@ -173,6 +173,33 @@ class AdminCollegeDetailView(APIView):
         )
         return Response(AdminCollegeDetailSerializer(updated_college).data)
 
+    def delete(self, request, pk):
+        college = get_object_or_404(College, pk=pk)
+        name = college.name
+        code = college.code
+        with transaction.atomic():
+            # Check for existing attempts under this college
+            active_attempts = AssessmentAttempt.objects.filter(candidate__college_ref=college).count()
+            if active_attempts > 0:
+                return Response(
+                    {"detail": f"Cannot delete college '{name}' because {active_attempts} candidate assessment attempt(s) are associated with it. Please deactivate the college instead."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+            
+            # Remove associated candidates if no attempts exist
+            Candidate.objects.filter(college_ref=college).delete()
+            college.delete()
+
+            log_assessment_audit(
+                action=AssessmentAuditLog.Action.COLLEGE_STATUS_TOGGLED,
+                entity_type="COLLEGE",
+                entity_id=str(pk),
+                user=request.user,
+                details={"deleted": True, "name": name, "code": code},
+            )
+
+        return Response({"message": f"College '{name}' ({code}) deleted successfully."}, status=status.HTTP_200_OK)
+
 
 class AdminCollegeToggleStatusView(APIView):
     permission_classes = [IsCSLAdminUser]
@@ -307,6 +334,34 @@ class AdminAssessmentDetailView(APIView):
             )
 
         return Response(AdminAssessmentDetailSerializer(updated).data)
+
+    def delete(self, request, pk):
+        assessment = get_object_or_404(Assessment, pk=pk)
+        title = assessment.title
+        code = assessment.code
+
+        with transaction.atomic():
+            attempts_count = assessment.attempts.count()
+            if attempts_count > 0:
+                return Response(
+                    {"detail": f"Cannot delete assessment '{title}' ({code}) because {attempts_count} candidate attempt(s) are recorded. Please archive the assessment instead."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Clear M2M associations before deletion
+            assessment.eligible_colleges.clear()
+            assessment.questions.clear()
+            assessment.delete()
+
+            log_assessment_audit(
+                action=AssessmentAuditLog.Action.ASSESSMENT_ARCHIVED,
+                entity_type="ASSESSMENT",
+                entity_id=str(pk),
+                user=request.user,
+                details={"deleted": True, "title": title, "code": code},
+            )
+
+        return Response({"message": f"Assessment '{title}' ({code}) deleted successfully."}, status=status.HTTP_200_OK)
 
 
 class AdminAssessmentPrepareView(APIView):
@@ -1108,3 +1163,94 @@ class AdminGlobalAuditLogsView(APIView):
     def get(self, request):
         logs = AssessmentAuditLog.objects.all().order_by("-timestamp")[:100]
         return Response(AdminAssessmentAuditLogSerializer(logs, many=True).data)
+
+
+class AdminUserManagementView(APIView):
+    """
+    Superuser administration endpoint.
+    Only superusers can view and create new administrator accounts.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def get(self, request):
+        from apps.users.models import User
+        users = User.objects.filter(is_staff=True).order_by("-date_joined")
+        data = [
+            {
+                "id": u.id,
+                "email": u.email,
+                "username": u.username,
+                "name": u.first_name or u.username,
+                "role": u.role,
+                "status": u.status,
+                "is_staff": u.is_staff,
+                "is_superuser": u.is_superuser,
+                "is_active": u.is_active,
+                "date_joined": u.date_joined,
+            }
+            for u in users
+        ]
+        return Response(data)
+
+    def post(self, request):
+        from apps.users.models import User
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only active superusers can create new administrative accounts."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        email = request.data.get("email", "").strip().lower()
+        password = request.data.get("password", "").strip()
+        name = request.data.get("name", "").strip()
+        is_superuser = bool(request.data.get("is_superuser", True))
+
+        if not email or "@" not in email:
+            return Response({"detail": "A valid email address is required."}, status=status.HTTP_400_BAD_REQUEST)
+        if not password or len(password) < 8:
+            return Response({"detail": "Password must be at least 8 characters."}, status=status.HTTP_400_BAD_REQUEST)
+
+        username = email.split("@")[0][:30]
+
+        if User.objects.filter(email=email).exists():
+            return Response({"detail": f"User with email '{email}' already exists."}, status=status.HTTP_400_BAD_REQUEST)
+
+        # Ensure unique username
+        base_username = username
+        counter = 1
+        while User.objects.filter(username=username).exists():
+            username = f"{base_username}{counter}"
+            counter += 1
+
+        user = User.objects.create_user(
+            email=email,
+            username=username,
+            password=password,
+            first_name=name or username,
+            role=User.Role.ADMIN,
+            status=User.AccountStatus.ACTIVE,
+            is_staff=True,
+            is_superuser=is_superuser,
+            is_active=True,
+        )
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.ASSESSMENT_CREATED,
+            entity_type="ADMIN_USER",
+            entity_id=str(user.id),
+            user=request.user,
+            details={"email": user.email, "is_superuser": user.is_superuser},
+        )
+
+        return Response(
+            {
+                "id": user.id,
+                "email": user.email,
+                "username": user.username,
+                "name": user.first_name,
+                "role": user.role,
+                "is_superuser": user.is_superuser,
+                "message": f"Administrator account '{user.email}' created successfully.",
+            },
+            status=status.HTTP_201_CREATED,
+        )

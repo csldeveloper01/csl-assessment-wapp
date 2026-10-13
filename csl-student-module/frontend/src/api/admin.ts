@@ -327,6 +327,11 @@ export async function toggleAdminCollegeStatus(id: number): Promise<{ id: number
   return res.data;
 }
 
+export async function deleteAdminCollege(id: number): Promise<{ message: string }> {
+  const res = await adminApi.delete(`/colleges/${id}/`);
+  return res.data;
+}
+
 export async function importAdminCollegeCandidates(
   collegeId: number,
   file?: File,
@@ -363,6 +368,11 @@ export async function createAdminAssessment(data: Partial<AdminAssessment> & { e
 
 export async function updateAdminAssessment(id: string, data: Partial<AdminAssessment> & { eligible_college_ids?: number[] }): Promise<AdminAssessmentDetail> {
   const res = await adminApi.patch<AdminAssessmentDetail>(`/assessments/${id}/`, data);
+  return res.data;
+}
+
+export async function deleteAdminAssessment(id: string): Promise<{ message: string }> {
+  const res = await adminApi.delete(`/assessments/${id}/`);
   return res.data;
 }
 
@@ -595,5 +605,34 @@ export async function reviewAdminIntegrityEvent(
     is_reviewed,
     review_notes,
   });
+  return res.data;
+}
+
+// ─── SUPERUSER & ADMIN MANAGEMENT ──────────────────────────────────────────
+export interface AdminStaffUser {
+  id: number;
+  email: string;
+  username: string;
+  name: string;
+  role: string;
+  status: string;
+  is_staff: boolean;
+  is_superuser: boolean;
+  is_active: boolean;
+  date_joined: string;
+}
+
+export async function getAdminUsers(): Promise<AdminStaffUser[]> {
+  const res = await adminApi.get<AdminStaffUser[]>('/users/');
+  return res.data;
+}
+
+export async function createAdminUser(data: {
+  email: string;
+  password: string;
+  name?: string;
+  is_superuser?: boolean;
+}): Promise<{ id: number; email: string; username: string; message: string }> {
+  const res = await adminApi.post('/users/', data);
   return res.data;
 }
