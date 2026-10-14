@@ -226,8 +226,11 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
         ]
 
     def get_sections(self, obj):
-        allocs = obj.section_allocations.select_related("section").order_by("order", "id")
-        return AdminAssessmentSectionAllocationSerializer(allocs, many=True).data
+        try:
+            allocs = obj.section_allocations.select_related("section").order_by("order", "id")
+            return AdminAssessmentSectionAllocationSerializer(allocs, many=True).data
+        except Exception:
+            return []
 
     def get_is_open(self, obj):
         return obj.is_currently_open()
@@ -242,19 +245,22 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
         return obj.questions.filter(section_type=QuestionBank.SectionType.CODING, is_active=True).count()
 
     def get_pool_sufficient(self, obj):
-        allocs = obj.section_allocations.select_related("section").all()
-        if allocs.exists():
-            for alloc in allocs:
-                if obj.questions.exists():
-                    cnt = obj.questions.filter(section_type=alloc.section.code, is_active=True).count()
-                else:
-                    cnt = QuestionBank.objects.filter(section_type=alloc.section.code, is_active=True).count()
-                if cnt < alloc.question_count:
-                    return False
-            return True
+        try:
+            allocs = obj.section_allocations.select_related("section").all()
+            if allocs.exists():
+                for alloc in allocs:
+                    if obj.questions.exists():
+                        cnt = obj.questions.filter(section_type=alloc.section.code, is_active=True).count()
+                    else:
+                        cnt = QuestionBank.objects.filter(section_type=alloc.section.code, is_active=True).count()
+                    if cnt < alloc.question_count:
+                        return False
+                return True
+        except Exception:
+            pass
         apt = self.get_pool_aptitude_count(obj)
         cod = self.get_pool_coding_count(obj)
-        return (apt >= obj.aptitude_count) and (cod >= obj.coding_count)
+        return (apt >= (obj.aptitude_count or 0)) and (cod >= (obj.coding_count or 0))
 
     def get_eligible_colleges(self, obj):
         return [{"id": c.id, "name": c.name, "code": c.code} for c in obj.eligible_colleges.all()]

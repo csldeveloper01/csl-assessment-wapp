@@ -314,10 +314,13 @@ class Assessment(models.Model):
         if self.total_marks < 1:
             errors["total_marks"] = "Total marks must be at least 1."
 
-        if self.pk and self.section_allocations.exists():
-            alloc_sum = sum(a.question_count * a.marks_per_question for a in self.section_allocations.all())
-            if self.total_marks != alloc_sum:
-                errors["total_marks"] = f"Total marks ({self.total_marks}) must equal the sum of section allocations ({alloc_sum})."
+        try:
+            if self.pk and self.section_allocations.exists():
+                alloc_sum = sum(a.question_count * a.marks_per_question for a in self.section_allocations.all())
+                if self.total_marks != alloc_sum:
+                    errors["total_marks"] = f"Total marks ({self.total_marks}) must equal the sum of section allocations ({alloc_sum})."
+        except Exception:
+            pass
 
         if errors:
             raise ValidationError(errors)

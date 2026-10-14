@@ -372,10 +372,18 @@ export function AssessmentInstructionsPage() {
 
   // Display metrics defaults
   const durationMinutes = selectedAssessment?.duration_minutes ?? 60;
+  const sections = selectedAssessment?.sections || [];
+  const hasDynamicSections = sections.length > 0;
+  const dynamicTotalQuestions = sections.reduce((acc, s) => acc + (s.question_count || 0), 0);
+  const dynamicTotalMarks = sections.reduce(
+    (acc, s) => acc + (s.total_marks || (s.question_count * s.marks_per_question) || 0),
+    0
+  );
+
   const aptitudeCount = selectedAssessment?.aptitude_count ?? 25;
   const codingCount = selectedAssessment?.coding_count ?? 25;
-  const totalQuestions = aptitudeCount + codingCount;
-  const totalMarks = selectedAssessment?.total_marks ?? 50;
+  const totalQuestions = hasDynamicSections ? dynamicTotalQuestions : (aptitudeCount + codingCount);
+  const totalMarks = selectedAssessment?.total_marks ?? (hasDynamicSections ? dynamicTotalMarks : 50);
   const maxAttempts = selectedAssessment?.max_attempts ?? 1;
   const assessmentTitle = selectedAssessment?.title ?? 'Initial Diagnostic Assessment';
   const assessmentCode = selectedAssessment?.code ?? 'CSL-INITIAL-01';

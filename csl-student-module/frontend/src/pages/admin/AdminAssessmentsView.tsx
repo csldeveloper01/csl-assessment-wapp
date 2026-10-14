@@ -21,6 +21,8 @@ import {
 
 interface AdminAssessmentsViewProps {
   onNavigateToQuestions?: (assessmentId?: string) => void;
+  initialAssessmentId?: string;
+  onClearAssessmentId?: () => void;
 }
 
 interface AssessmentSectionDraft {
@@ -31,7 +33,11 @@ interface AssessmentSectionDraft {
   marks_per_question: number;
 }
 
-export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessmentsViewProps) {
+export function AdminAssessmentsView({
+  onNavigateToQuestions,
+  initialAssessmentId,
+  onClearAssessmentId,
+}: AdminAssessmentsViewProps) {
   const [assessments, setAssessments] = useState<AdminAssessment[]>([]);
   const [colleges, setColleges] = useState<AdminCollege[]>([]);
   const [availableSections, setAvailableSections] = useState<AdminSection[]>([]);
@@ -56,6 +62,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
   const [selectedAssessment, setSelectedAssessment] = useState<AdminAssessment | null>(null);
   const [assessmentDetail, setAssessmentDetail] = useState<AdminAssessmentDetail | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
 
   // Close Assessment policy selection
   const [closePolicy, setClosePolicy] = useState<'ALLOW_FINISH' | 'STRICT_CUTOFF'>('ALLOW_FINISH');
@@ -140,19 +147,73 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
     fetchSections();
   }, [search, statusFilter]);
 
-  const handleOpenDetail = async (assessment: AdminAssessment) => {
-    setSelectedAssessment(assessment);
+  const handleOpenDetail = async (assessmentOrId: AdminAssessment | string) => {
+    const assessmentId = typeof assessmentOrId === 'string' ? assessmentOrId : assessmentOrId.id;
+    if (!assessmentId) return;
+
+    // Strict UUID format validation
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(assessmentId)) {
+      setDetailError(`Invalid assessment ID "${assessmentId}". A valid UUID is required.`);
+      setSelectedAssessment(null);
+      setAssessmentDetail(null);
+      setShowDetailModal(true);
+      return;
+    }
+
+    if (typeof assessmentOrId !== 'string') {
+      setSelectedAssessment(assessmentOrId);
+    } else {
+      const match = assessments.find((a) => a.id === assessmentId);
+      if (match) setSelectedAssessment(match);
+    }
+
     setDetailTab('overview');
     setShowDetailModal(true);
     setLoadingDetail(true);
+    setDetailError(null);
+
     try {
-      const detail = await getAdminAssessmentDetail(assessment.id);
+      const detail = await getAdminAssessmentDetail(assessmentId);
       setAssessmentDetail(detail);
-      setSelectedCollegeIdsForAssign(detail.eligible_colleges.map((c) => c.id));
-    } catch (err) {
+      setSelectedAssessment(detail);
+      const colIds = Array.isArray(detail.eligible_colleges)
+        ? detail.eligible_colleges.map((c) => c.id)
+        : [];
+      setSelectedCollegeIdsForAssign(colIds);
+    } catch (err: any) {
       console.error('Failed to fetch assessment detail:', err);
+      const status = err.response?.status;
+      if (status === 404) {
+        setDetailError('Assessment not found. It may have been archived or deleted.');
+      } else if (status === 401 || status === 403) {
+        setDetailError('Access denied: Administrator permissions required.');
+      } else {
+        setDetailError(
+          err.response?.data?.detail ||
+          err.message ||
+          'Failed to load assessment details from server. Please check your connection and retry.'
+        );
+      }
     } finally {
       setLoadingDetail(false);
+    }
+  };
+
+  // Auto-open assessment detail if initialAssessmentId was provided via route/query
+  useEffect(() => {
+    if (initialAssessmentId) {
+      handleOpenDetail(initialAssessmentId);
+    }
+  }, [initialAssessmentId]);
+
+  const handleCloseDetail = () => {
+    setShowDetailModal(false);
+    setSelectedAssessment(null);
+    setAssessmentDetail(null);
+    setDetailError(null);
+    if (onClearAssessmentId) {
+      onClearAssessmentId();
     }
   };
 
@@ -737,6 +798,8 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                 <tr key={a.id} style={{ borderBottom: '1px solid #F1F5F9', transition: 'background-color 0.15s' }}>
                   <td style={{ padding: '14px 16px' }}>
                     <span
+                      onClick={() => handleOpenDetail(a)}
+                      title="Click to view assessment details"
                       style={{
                         backgroundColor: '#EEF2FF',
                         color: '#3730A3',
@@ -745,13 +808,22 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                         padding: '4px 8px',
                         borderRadius: '6px',
                         letterSpacing: '0.02em',
+                        cursor: 'pointer',
                       }}
                     >
                       {a.code}
                     </span>
                   </td>
                   <td style={{ padding: '14px 16px' }}>
-                    <div style={{ fontWeight: 700, color: '#0F172A' }}>{a.title}</div>
+                    <div
+                      onClick={() => handleOpenDetail(a)}
+                      title="Click to view assessment details and statistics"
+                      style={{ fontWeight: 700, color: '#0F172A', cursor: 'pointer', transition: 'color 0.15s ease' }}
+                      onMouseEnter={(e) => (e.currentTarget.style.color = '#1455B8')}
+                      onMouseLeave={(e) => (e.currentTarget.style.color = '#0F172A')}
+                    >
+                      {a.title}
+                    </div>
                     {a.description && (
                       <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                         {a.description}
@@ -1853,7 +1925,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
       )}
 
       {/* ─── ASSESSMENT DETAIL & AUDIT MODAL ─────────────────────────── */}
-      {showDetailModal && selectedAssessment && (
+      {showDetailModal && (
         <div
           style={{
             position: 'fixed',
@@ -1864,14 +1936,17 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
             justifyContent: 'center',
             zIndex: 100,
           }}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) handleCloseDetail();
+          }}
         >
           <div
             style={{
               backgroundColor: '#FFFFFF',
               borderRadius: '12px',
               padding: '28px',
-              width: '800px',
-              maxWidth: '92vw',
+              width: '840px',
+              maxWidth: '94vw',
               maxHeight: '90vh',
               overflowY: 'auto',
               boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
@@ -1879,25 +1954,43 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: '16px' }}>
               <div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                   <h2 style={{ fontSize: '20px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
-                    {selectedAssessment.title}
+                    {assessmentDetail?.title || selectedAssessment?.title || (detailError ? 'Assessment Details Error' : 'Loading Assessment...')}
                   </h2>
-                  <span style={{ backgroundColor: '#EEF2FF', color: '#3730A3', fontWeight: 700, fontSize: '12px', padding: '2px 8px', borderRadius: '4px' }}>
-                    {selectedAssessment.code}
-                  </span>
-                  {getStatusBadge(selectedAssessment.status, selectedAssessment.is_open)}
-                </div>
-                <div style={{ fontSize: '13px', color: '#64748B', marginTop: '4px' }}>
-                  {selectedAssessment.duration_minutes} Minutes • {selectedAssessment.total_marks} Marks
-                  {selectedAssessment.sections && selectedAssessment.sections.length > 0 && (
-                    <span> ({selectedAssessment.sections.map((s) => `${s.question_count} ${s.section_name || s.section_code}`).join(' + ')})</span>
+                  {(selectedAssessment?.code || assessmentDetail?.code) && (
+                    <span style={{ backgroundColor: '#EEF2FF', color: '#3730A3', fontWeight: 700, fontSize: '12px', padding: '2px 8px', borderRadius: '4px' }}>
+                      {assessmentDetail?.code || selectedAssessment?.code}
+                    </span>
                   )}
+                  {(selectedAssessment || assessmentDetail) &&
+                    getStatusBadge(
+                      (assessmentDetail?.status || selectedAssessment?.status) || 'DRAFT',
+                      Boolean(assessmentDetail?.is_open ?? selectedAssessment?.is_open)
+                    )}
                 </div>
+                {(selectedAssessment || assessmentDetail) && (
+                  <div style={{ fontSize: '13px', color: '#64748B', marginTop: '4px' }}>
+                    {assessmentDetail?.duration_minutes ?? selectedAssessment?.duration_minutes ?? 60} Minutes •{' '}
+                    {assessmentDetail?.total_marks ?? selectedAssessment?.total_marks ?? 50} Marks
+                    {((assessmentDetail?.sections && assessmentDetail.sections.length > 0) ||
+                      (selectedAssessment?.sections && selectedAssessment.sections.length > 0)) && (
+                      <span>
+                        {' '}
+                        (
+                        {(assessmentDetail?.sections || selectedAssessment?.sections || []).map(
+                          (s) => `${s.question_count || 0} ${s.section_name || s.section_code || 'Section'}`
+                        ).join(' + ')}
+                        )
+                      </span>
+                    )}
+                  </div>
+                )}
               </div>
               <button
-                onClick={() => setShowDetailModal(false)}
+                onClick={handleCloseDetail}
                 style={{ background: 'none', border: 'none', fontSize: '22px', cursor: 'pointer', color: '#94A3B8' }}
+                title="Close Assessment Details"
               >
                 ✕
               </button>
@@ -1953,7 +2046,63 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
             </div>
 
             {loadingDetail ? (
-              <div style={{ padding: '36px', textAlign: 'center', color: '#64748B' }}>Loading assessment configuration...</div>
+              <div style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
+                <div style={{ fontSize: '14px', fontWeight: 600 }}>Loading assessment configuration...</div>
+              </div>
+            ) : detailError ? (
+              <div
+                style={{
+                  padding: '24px',
+                  backgroundColor: '#FEF2F2',
+                  border: '1px solid #FECACA',
+                  borderRadius: '8px',
+                  color: '#991B1B',
+                  marginBottom: '20px',
+                }}
+              >
+                <div style={{ fontWeight: 700, fontSize: '14px', marginBottom: '6px' }}>
+                  Unable to Load Assessment Details
+                </div>
+                <p style={{ margin: '0 0 16px 0', fontSize: '13px', lineHeight: 1.5 }}>
+                  {detailError}
+                </p>
+                <div style={{ display: 'flex', gap: '10px' }}>
+                  <button
+                    onClick={() => {
+                      const id = selectedAssessment?.id || initialAssessmentId;
+                      if (id) handleOpenDetail(id);
+                      else handleCloseDetail();
+                    }}
+                    style={{
+                      padding: '7px 16px',
+                      backgroundColor: '#0B2E6F',
+                      color: '#FFFFFF',
+                      border: 'none',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Retry
+                  </button>
+                  <button
+                    onClick={handleCloseDetail}
+                    style={{
+                      padding: '7px 14px',
+                      backgroundColor: '#FFFFFF',
+                      color: '#475569',
+                      border: '1px solid #CBD5E1',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 600,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    Close / Back to Assessments
+                  </button>
+                </div>
+              </div>
             ) : assessmentDetail ? (
               <div>
                 {/* 1. OVERVIEW TAB */}
@@ -1962,67 +2111,108 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px', marginBottom: '20px' }}>
                       <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
                         <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 700, textTransform: 'uppercase' }}>Total Attempts</div>
-                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#0B2E6F', marginTop: '4px' }}>{assessmentDetail.attempts_count}</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#0B2E6F', marginTop: '4px' }}>{assessmentDetail.attempts_count ?? 0}</div>
                       </div>
                       <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
                         <div style={{ fontSize: '11px', color: '#16A34A', fontWeight: 700, textTransform: 'uppercase' }}>In Progress</div>
-                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#16A34A', marginTop: '4px' }}>{assessmentDetail.in_progress_count}</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#16A34A', marginTop: '4px' }}>{assessmentDetail.in_progress_count ?? 0}</div>
                       </div>
                       <div style={{ background: '#F8FAFC', padding: '12px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
                         <div style={{ fontSize: '11px', color: '#2563EB', fontWeight: 700, textTransform: 'uppercase' }}>Submitted</div>
-                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#2563EB', marginTop: '4px' }}>{assessmentDetail.submitted_count}</div>
+                        <div style={{ fontSize: '20px', fontWeight: 800, color: '#2563EB', marginTop: '4px' }}>{assessmentDetail.submitted_count ?? 0}</div>
                       </div>
                     </div>
 
                     <div style={{ backgroundColor: '#F8FAFC', padding: '14px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '16px', fontSize: '13px' }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
                         <div style={{ fontWeight: 700, color: '#334155' }}>Proctoring & Rules Configuration</div>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setShowDetailModal(false);
-                            handleOpenEdit(assessmentDetail);
-                          }}
-                          style={{
-                            backgroundColor: '#FEF3C7',
-                            color: '#92400E',
-                            border: '1px solid #FDE68A',
-                            padding: '4px 10px',
-                            borderRadius: '5px',
-                            fontSize: '12px',
-                            fontWeight: 700,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          ✎ Edit Assessment Parameters
-                        </button>
+                        <div style={{ display: 'flex', gap: '8px' }}>
+                          {onNavigateToQuestions && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                handleCloseDetail();
+                                onNavigateToQuestions(assessmentDetail.id);
+                              }}
+                              style={{
+                                backgroundColor: '#EEF2FF',
+                                color: '#4338CA',
+                                border: '1px solid #C7D2FE',
+                                padding: '4px 10px',
+                                borderRadius: '5px',
+                                fontSize: '12px',
+                                fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Manage Question Pool ({assessmentDetail.pool_questions_count ?? 0})
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowDetailModal(false);
+                              handleOpenEdit(assessmentDetail);
+                            }}
+                            style={{
+                              backgroundColor: '#FEF3C7',
+                              color: '#92400E',
+                              border: '1px solid #FDE68A',
+                              padding: '4px 10px',
+                              borderRadius: '5px',
+                              fontSize: '12px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            ✎ Edit Assessment Parameters
+                          </button>
+                        </div>
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
-                        <div>Duration: <strong>{assessmentDetail.duration_minutes} Minutes</strong></div>
-                        <div>Total Marks: <strong>{assessmentDetail.total_marks} Marks</strong></div>
-                        <div>Max Tab Warnings: <strong>{assessmentDetail.max_tab_switches_warning}</strong> (Auto-submit: {assessmentDetail.auto_submit_on_tab_limit ? 'Yes' : 'No'})</div>
-                        <div>Max Attempts per Student: <strong>{assessmentDetail.max_attempts}</strong></div>
-                        <div>Close Policy: <strong>{assessmentDetail.close_policy}</strong></div>
+                        <div>Duration: <strong>{assessmentDetail.duration_minutes ?? 60} Minutes</strong></div>
+                        <div>Total Marks: <strong>{assessmentDetail.total_marks ?? 50} Marks</strong></div>
+                        <div>Max Tab Warnings: <strong>{assessmentDetail.max_tab_switches_warning ?? 2}</strong> (Auto-submit: {assessmentDetail.auto_submit_on_tab_limit ? 'Yes' : 'No'})</div>
+                        <div>Max Attempts per Student: <strong>{assessmentDetail.max_attempts ?? 1}</strong></div>
+                        <div>Close Policy: <strong>{assessmentDetail.close_policy || 'ALLOW_FINISH'}</strong></div>
                         <div>Opened: <strong>{assessmentDetail.opened_at ? new Date(assessmentDetail.opened_at).toLocaleString() : 'Not opened yet'}</strong></div>
+                        {assessmentDetail.closed_at && (
+                          <div>Closed: <strong>{new Date(assessmentDetail.closed_at).toLocaleString()}</strong></div>
+                        )}
+                        <div>
+                          Question Pool Status:{' '}
+                          <strong style={{ color: assessmentDetail.pool_sufficient ? '#16A34A' : '#DC2626' }}>
+                            {assessmentDetail.pool_sufficient ? '✓ Sufficient' : '⚠ Insufficient Pool'}
+                          </strong>
+                        </div>
                       </div>
                     </div>
 
                     {/* Section Breakdown Card */}
-                    {assessmentDetail.sections && assessmentDetail.sections.length > 0 && (
+                    {Array.isArray(assessmentDetail.sections) && assessmentDetail.sections.length > 0 ? (
                       <div style={{ backgroundColor: '#F8FAFC', padding: '14px', borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '13px' }}>
                         <div style={{ fontWeight: 700, color: '#334155', marginBottom: '8px' }}>Configured Sections</div>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                          {assessmentDetail.sections.map((s) => (
-                            <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', background: '#FFFFFF', padding: '6px 12px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
-                              <span style={{ fontWeight: 600, color: '#0B2E6F' }}>
-                                [{s.section_code}] {s.section_name}
-                              </span>
-                              <span style={{ color: '#475569' }}>
-                                {s.question_count} Questions ({s.marks_per_question} mark/Q = {s.question_count * s.marks_per_question} marks)
-                              </span>
-                            </div>
-                          ))}
+                          {assessmentDetail.sections.map((s, idx) => {
+                            const qCount = Number(s.question_count || 0);
+                            const marksPerQ = Number(s.marks_per_question || 1);
+                            const totalSecMarks = qCount * marksPerQ;
+                            return (
+                              <div key={s.id || idx} style={{ display: 'flex', justifyContent: 'space-between', background: '#FFFFFF', padding: '6px 12px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                                <span style={{ fontWeight: 600, color: '#0B2E6F' }}>
+                                  [{s.section_code || 'SEC'}] {s.section_name || 'Section'}
+                                </span>
+                                <span style={{ color: '#475569' }}>
+                                  {qCount} Questions ({marksPerQ} mark/Q = {totalSecMarks} marks)
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
+                      </div>
+                    ) : (
+                      <div style={{ backgroundColor: '#F8FAFC', padding: '12px 14px', borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '13px', color: '#475569' }}>
+                        <strong>Curriculum Allocation:</strong> {assessmentDetail.aptitude_count ?? 25} Aptitude + {assessmentDetail.coding_count ?? 25} Coding Questions (1 mark/Q)
                       </div>
                     )}
                   </div>
@@ -2035,27 +2225,33 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                       Select which participating institutions are eligible to register candidates and take this assessment.
                     </p>
                     <div style={{ border: '1px solid #E2E8F0', borderRadius: '8px', padding: '12px', maxHeight: '240px', overflowY: 'auto', backgroundColor: '#F8FAFC', marginBottom: '16px' }}>
-                      {colleges.map((c) => {
-                        const isChecked = selectedCollegeIdsForAssign.includes(c.id);
-                        return (
-                          <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 4px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #F1F5F9' }}>
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={(e) => {
-                                if (e.target.checked) {
-                                  setSelectedCollegeIdsForAssign([...selectedCollegeIdsForAssign, c.id]);
-                                } else {
-                                  setSelectedCollegeIdsForAssign(selectedCollegeIdsForAssign.filter((id) => id !== c.id));
-                                }
-                              }}
-                            />
-                            <span style={{ fontWeight: 700, color: '#3730A3', backgroundColor: '#EEF2FF', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>{c.code}</span>
-                            <span>{c.name}</span>
-                            <span style={{ marginLeft: 'auto', color: '#64748B', fontSize: '12px' }}>{c.candidates_count || 0} students</span>
-                          </label>
-                        );
-                      })}
+                      {Array.isArray(colleges) && colleges.length > 0 ? (
+                        colleges.map((c) => {
+                          const isChecked = selectedCollegeIdsForAssign.includes(c.id);
+                          return (
+                            <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 4px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #F1F5F9' }}>
+                              <input
+                                type="checkbox"
+                                checked={isChecked}
+                                onChange={(e) => {
+                                  if (e.target.checked) {
+                                    setSelectedCollegeIdsForAssign([...selectedCollegeIdsForAssign, c.id]);
+                                  } else {
+                                    setSelectedCollegeIdsForAssign(selectedCollegeIdsForAssign.filter((id) => id !== c.id));
+                                  }
+                                }}
+                              />
+                              <span style={{ fontWeight: 700, color: '#3730A3', backgroundColor: '#EEF2FF', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>{c.code}</span>
+                              <span>{c.name}</span>
+                              <span style={{ marginLeft: 'auto', color: '#64748B', fontSize: '12px' }}>{c.candidates_count || 0} students</span>
+                            </label>
+                          );
+                        })
+                      ) : (
+                        <div style={{ padding: '16px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>
+                          No institutions available.
+                        </div>
+                      )}
                     </div>
                     <button
                       type="button"
@@ -2071,7 +2267,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                 {/* 3. AUDIT TRAIL TAB */}
                 {detailTab === 'audit' && (
                   <div>
-                    {assessmentDetail.audit_logs && assessmentDetail.audit_logs.length > 0 ? (
+                    {Array.isArray(assessmentDetail.audit_logs) && assessmentDetail.audit_logs.length > 0 ? (
                       <div style={{ border: '1px solid #E2E8F0', borderRadius: '8px', overflow: 'hidden', maxHeight: '280px', overflowY: 'auto' }}>
                         <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px' }}>
                           <thead>
@@ -2083,20 +2279,22 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                             </tr>
                           </thead>
                           <tbody>
-                            {assessmentDetail.audit_logs.map((log) => (
-                              <tr key={log.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                            {assessmentDetail.audit_logs.map((log, idx) => (
+                              <tr key={log.id || idx} style={{ borderBottom: '1px solid #F1F5F9' }}>
                                 <td style={{ padding: '8px 12px', color: '#64748B', whiteSpace: 'nowrap' }}>
-                                  {new Date(log.timestamp).toLocaleString()}
+                                  {log.timestamp ? new Date(log.timestamp).toLocaleString() : '—'}
                                 </td>
                                 <td style={{ padding: '8px 12px', fontWeight: 700, color: '#0B2E6F' }}>
-                                  {log.action}
+                                  {log.action || 'ACTION'}
                                 </td>
                                 <td style={{ padding: '8px 12px' }}>
                                   {log.performed_by_name || 'System'}
                                 </td>
                                 <td style={{ padding: '8px 12px', color: '#475569' }}>
                                   <code style={{ fontSize: '11px', background: '#F1F5F9', padding: '2px 4px', borderRadius: '3px' }}>
-                                    {JSON.stringify(log.details)}
+                                    {typeof log.details === 'object' && log.details !== null
+                                      ? JSON.stringify(log.details)
+                                      : String(log.details || '{}')}
                                   </code>
                                 </td>
                               </tr>
@@ -2116,7 +2314,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', marginTop: '24px' }}>
               <button
-                onClick={() => setShowDetailModal(false)}
+                onClick={handleCloseDetail}
                 style={{ backgroundColor: '#0B2E6F', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '8px 18px', fontWeight: 700, cursor: 'pointer' }}
               >
                 Close

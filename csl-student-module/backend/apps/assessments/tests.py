@@ -1328,5 +1328,66 @@ class RegressionAndDynamicSectionTests(TestCase):
         self.assertEqual(start_res.data["total_questions"], 2)  # max_marks is 2
 
 
+class AdminAssessmentDetailViewRegressionTests(TestCase):
+    def setUp(self):
+        from apps.users.models import User
+        self.client = Client()
+        self.admin = User.objects.create_user(
+            username="admin_detail_tester",
+            email="admin_detail@csl.com",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.AccountStatus.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.college = College.objects.create(
+            name="Testing Institute of Technology",
+            code="TIT01",
+            contact_email="tit@example.com",
+            is_active=True,
+        )
+        self.assessment = Assessment.objects.create(
+            code="DET-TEST-01",
+            title="Detail View Test Assessment",
+            duration_minutes=45,
+            total_marks=50,
+            aptitude_count=25,
+            coding_count=25,
+            status=Assessment.Status.DRAFT,
+        )
+        self.assessment.eligible_colleges.add(self.college)
 
+    def test_admin_assessment_detail_requires_auth(self):
+        url = f"/api/csl-admin/assessments/{self.assessment.id}/"
+        res = self.client.get(url)
+        self.assertIn(res.status_code, [401, 403])
 
+    def test_admin_assessment_detail_success(self):
+        self.client.force_login(self.admin)
+        url = f"/api/csl-admin/assessments/{self.assessment.id}/"
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, 200)
+        data = res.data
+        self.assertEqual(data["id"], str(self.assessment.id))
+        self.assertEqual(data["code"], "DET-TEST-01")
+        self.assertEqual(data["title"], "Detail View Test Assessment")
+        self.assertIn("sections", data)
+        self.assertIn("eligible_colleges", data)
+        self.assertTrue(isinstance(data["eligible_colleges"], list))
+        self.assertEqual(len(data["eligible_colleges"]), 1)
+        self.assertEqual(data["eligible_colleges"][0]["code"], "TIT01")
+        self.assertIn("audit_logs", data)
+
+    def test_admin_assessment_detail_invalid_uuid(self):
+        self.client.force_login(self.admin)
+        url = "/api/csl-admin/assessments/not-a-valid-uuid/"
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, 404)
+
+    def test_admin_assessment_detail_non_existent_uuid(self):
+        self.client.force_login(self.admin)
+        random_uuid = uuid.uuid4()
+        url = f"/api/csl-admin/assessments/{random_uuid}/"
+        res = self.client.get(url)
+        self.assertEqual(res.status_code, 404)

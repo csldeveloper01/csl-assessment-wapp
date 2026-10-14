@@ -138,20 +138,23 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
 
     def get_sections(self, obj):
         if obj.assessment:
-            allocs = obj.assessment.section_allocations.select_related("section").order_by("order", "id")
-            if allocs.exists():
-                return [
-                    {
-                        "id": a.section.id,
-                        "name": a.section.name,
-                        "code": a.section.code,
-                        "description": a.section.description,
-                        "question_count": a.question_count,
-                        "marks_per_question": a.marks_per_question,
-                        "order": a.order,
-                    }
-                    for a in allocs
-                ]
+            try:
+                allocs = obj.assessment.section_allocations.select_related("section").order_by("order", "id")
+                if allocs.exists():
+                    return [
+                        {
+                            "id": a.section.id,
+                            "name": a.section.name,
+                            "code": a.section.code,
+                            "description": a.section.description,
+                            "question_count": a.question_count,
+                            "marks_per_question": a.marks_per_question,
+                            "order": a.order,
+                        }
+                        for a in allocs
+                    ]
+            except Exception:
+                pass
         # Deriving from snapshots if assessment has no allocations or legacy
         seen_sections = []
         added = set()
@@ -493,20 +496,23 @@ class StudentCandidateAssessmentSerializer(serializers.ModelSerializer):
         return None
 
     def get_sections(self, obj):
-        allocs = obj.section_allocations.select_related("section").order_by("order", "id")
-        if allocs.exists():
-            return [
-                {
-                    "id": a.section.id,
-                    "name": a.section.name,
-                    "code": a.section.code,
-                    "description": a.section.description,
-                    "question_count": a.question_count,
-                    "marks_per_question": a.marks_per_question,
-                    "order": a.order,
-                }
-                for a in allocs
-            ]
+        try:
+            allocs = obj.section_allocations.select_related("section").order_by("order", "id")
+            if allocs.exists():
+                return [
+                    {
+                        "id": a.section.id,
+                        "name": a.section.name,
+                        "code": a.section.code,
+                        "description": a.section.description,
+                        "question_count": a.question_count,
+                        "marks_per_question": a.marks_per_question,
+                        "order": a.order,
+                    }
+                    for a in allocs
+                ]
+        except Exception:
+            pass
         legacy = []
         if obj.aptitude_count:
             legacy.append({

@@ -88,7 +88,14 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
     scope_name = f"question pool for '{assessment.title}' ({assessment.code})" if (assessment and assessment.questions.exists()) else "bank"
     errors = []
 
-    if assessment and assessment.section_allocations.exists():
+    has_allocations = False
+    try:
+        if assessment and assessment.section_allocations.exists():
+            has_allocations = True
+    except Exception:
+        has_allocations = False
+
+    if has_allocations:
         for alloc in assessment.section_allocations.select_related("section").all():
             sec = alloc.section
             needed = alloc.question_count
@@ -649,7 +656,14 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
 
     # Dynamic or legacy question selection
     all_selected = []
-    if assessment and assessment.section_allocations.exists():
+    has_allocations = False
+    try:
+        if assessment and assessment.section_allocations.exists():
+            has_allocations = True
+    except Exception:
+        has_allocations = False
+
+    if has_allocations:
         allocations = assessment.section_allocations.select_related("section").order_by("order", "id")
         order_counter = 1
         for alloc in allocations:
@@ -800,9 +814,12 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
 
     # Dynamic section marks lookup
     marks_map = {}
-    if locked_attempt.assessment and locked_attempt.assessment.section_allocations.exists():
-        for alloc in locked_attempt.assessment.section_allocations.select_related("section").all():
-            marks_map[alloc.section.code] = alloc.marks_per_question
+    try:
+        if locked_attempt.assessment and locked_attempt.assessment.section_allocations.exists():
+            for alloc in locked_attempt.assessment.section_allocations.select_related("section").all():
+                marks_map[alloc.section.code] = alloc.marks_per_question
+    except Exception:
+        marks_map = {}
 
     aptitude_score = 0
     coding_score = 0

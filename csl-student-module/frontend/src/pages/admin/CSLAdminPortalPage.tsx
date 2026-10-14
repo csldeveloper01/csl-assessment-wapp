@@ -70,6 +70,7 @@ export function CSLAdminPortalPage() {
 
   const activeTab = searchParams.get('tab') || 'overview';
   const reviewAttemptId = searchParams.get('attemptId');
+  const assessmentIdFromQuery = searchParams.get('assessmentId');
   const fromTab = searchParams.get('fromTab') || 'live';
 
   const CSL_ADMIN_TAB_AUTH_KEY = 'csl_admin_tab_authenticated';
@@ -427,6 +428,8 @@ export function CSLAdminPortalPage() {
   const currentTabLabel =
     activeTab === 'review'
       ? 'Attempt Detailed Review'
+      : (activeTab === 'assessments' || activeTab === 'assessment')
+      ? (assessmentIdFromQuery ? 'Assessment Details' : 'Assessments')
       : navItems.find((n) => n.key === activeTab)?.label || activeTab;
 
   const sidebarWidth = isSidebarCollapsed ? 70 : 240;
@@ -898,10 +901,14 @@ export function CSLAdminPortalPage() {
             <AdminCandidatesView onReviewAttempt={handleOpenReview} />
           )}
 
-          {activeTab === 'assessments' && (
+          {(activeTab === 'assessments' || activeTab === 'assessment') && (
             <AdminAssessmentsView
+              initialAssessmentId={assessmentIdFromQuery || undefined}
               onNavigateToQuestions={(assessmentId) => {
                 setSearchParams({ tab: 'questions', ...(assessmentId ? { assessmentId } : {}) });
+              }}
+              onClearAssessmentId={() => {
+                setSearchParams({ tab: 'assessments' });
               }}
             />
           )}

@@ -74,6 +74,10 @@ export function AssessmentExamPage() {
         return;
       }
       setAttempt(data);
+      if (data.questions && data.questions.length > 0) {
+        const firstSec = data.questions[0].section_type || 'GENERAL';
+        setActiveSectionTab(firstSec);
+      }
 
       // Hydrate answers and save states
       const initialAns: Record<number, string> = {};
@@ -123,7 +127,7 @@ export function AssessmentExamPage() {
 
   // Keep active section tab synchronized with current question section
   useEffect(() => {
-    if (attempt && attempt.questions[currentIndex]) {
+    if (attempt && attempt.questions && attempt.questions[currentIndex]) {
       const qSection = attempt.questions[currentIndex].section_type;
       if (qSection && qSection !== activeSectionTab) {
         setActiveSectionTab(qSection);
@@ -415,7 +419,7 @@ export function AssessmentExamPage() {
     );
   }
 
-  if (error || !attempt) {
+  if (error || !attempt || !attempt.questions || attempt.questions.length === 0) {
     return (
       <div
         style={{
@@ -442,9 +446,11 @@ export function AssessmentExamPage() {
         >
           <div style={{ fontSize: '32px', marginBottom: '12px' }}>⚠️</div>
           <h2 style={{ color: '#DC2626', fontSize: '18px', fontWeight: 700, marginBottom: '8px' }}>
-            Unable to Access Assessment
+            {error ? 'Unable to Access Assessment' : 'No Questions Available'}
           </h2>
-          <p style={{ fontSize: '14px', color: '#6B7280', marginBottom: '20px' }}>{error}</p>
+          <p style={{ fontSize: '14px', color: '#6B7280', marginBottom: '20px' }}>
+            {error || 'This assessment does not currently have any questions assigned. Please contact your test administrator.'}
+          </p>
           <button
             onClick={() => navigate('/assessment/register')}
             style={{
@@ -464,18 +470,19 @@ export function AssessmentExamPage() {
     );
   }
 
-  const currentQ: QuestionSnapshot = attempt.questions[currentIndex];
+  const currentQ: QuestionSnapshot = attempt.questions[currentIndex] || attempt.questions[0];
   const answeredCount = Object.keys(answers).filter((k) => !!answers[Number(k)]).length;
 
   // Filter questions for active section tab
   const sectionQuestions = attempt.questions.filter((q) => q.section_type === activeSectionTab);
-  const sectionAnsweredCount = sectionQuestions.filter(
+  const effectiveSectionQuestions = sectionQuestions.length > 0 ? sectionQuestions : attempt.questions;
+  const sectionAnsweredCount = effectiveSectionQuestions.filter(
     (q) => !!answers[q.question_order]
   ).length;
 
   // Position within section (1-indexed, e.g. "Question 1 of 25")
   const currentSectionIndex =
-    sectionQuestions.findIndex((q) => q.question_order === currentQ.question_order) + 1;
+    effectiveSectionQuestions.findIndex((q) => q.question_order === currentQ.question_order) + 1;
   const questionNumberInSection = currentSectionIndex > 0 ? currentSectionIndex : currentQ.question_order;
 
   const formatTime = (secs: number) => {
@@ -861,7 +868,7 @@ export function AssessmentExamPage() {
               padding: '12px',
               borderBottom: '1px solid #FAF7F3',
               display: 'grid',
-              gridTemplateColumns: `repeat(${Math.min(sectionsList.length || 2, 2)}, 1fr)`,
+              gridTemplateColumns: `repeat(${Math.max(1, sectionsList.length || 1)}, 1fr)`,
               gap: '8px',
             }}
           >

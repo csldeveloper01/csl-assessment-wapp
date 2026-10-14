@@ -837,9 +837,14 @@ export function AssessmentRegisterPage() {
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
                         📝{' '}
                         <strong>
-                          {assessment.aptitude_count + assessment.coding_count} MCQs
+                          {assessment.sections && assessment.sections.length > 0
+                            ? assessment.sections.reduce((sum, s) => sum + (s.question_count || 0), 0)
+                            : (assessment.aptitude_count || 0) + (assessment.coding_count || 0)}{' '}
+                          MCQs
                         </strong>{' '}
-                        ({assessment.aptitude_count} Apt / {assessment.coding_count} Code)
+                        ({assessment.sections && assessment.sections.length > 0
+                          ? assessment.sections.map((s) => `${s.question_count} ${s.code || s.name}`).join(' / ')
+                          : `${assessment.aptitude_count || 0} Apt / ${assessment.coding_count || 0} Code`})
                       </span>
                       <span>·</span>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
