@@ -180,7 +180,7 @@ export interface AdminQuestion {
   section_type: string;
   section_id?: number | null;
   section_name?: string;
-  category: string;
+  category?: string;
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
   option_a: string;
   option_b: string;
@@ -239,7 +239,7 @@ export interface AdminQuestionReviewSnapshot {
   id: number;
   question_order: number;
   section_type: string;
-  category: string;
+  category?: string;
   prompt: string;
   option_a_text: string;
   option_b_text: string;

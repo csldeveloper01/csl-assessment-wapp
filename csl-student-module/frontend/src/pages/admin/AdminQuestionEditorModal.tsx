@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { type AdminQuestion, type AdminAssessment, type AdminSection, getAdminSections } from '../../api/admin';
+import { formatApiError } from '../../utils/errorFormatter';
 
 interface AdminQuestionEditorModalProps {
   question: AdminQuestion | null; // null if creating, populated if editing
@@ -37,7 +38,6 @@ export function AdminQuestionEditorModal({
       getAdminSections().then(setLoadedSections).catch(() => {});
     }
   }, [sections, isOpen]);
-  const [category, setCategory] = useState('');
   const [difficulty, setDifficulty] = useState<'EASY' | 'MEDIUM' | 'HARD'>('MEDIUM');
   const [optionA, setOptionA] = useState('');
   const [optionB, setOptionB] = useState('');
@@ -69,7 +69,6 @@ export function AdminQuestionEditorModal({
       setAssessmentId(existingAssessmentId);
       setPrompt(question.prompt || '');
       setSectionType(question.section_type || 'APTITUDE');
-      setCategory(question.category || '');
       setDifficulty(question.difficulty || 'MEDIUM');
       setOptionA(question.option_a || '');
       setOptionB(question.option_b || '');
@@ -83,7 +82,6 @@ export function AdminQuestionEditorModal({
         assessmentId: existingAssessmentId,
         prompt: question.prompt || '',
         sectionType: question.section_type || 'APTITUDE',
-        category: question.category || '',
         difficulty: question.difficulty || 'MEDIUM',
         optionA: question.option_a || '',
         optionB: question.option_b || '',
@@ -102,7 +100,6 @@ export function AdminQuestionEditorModal({
       setAssessmentId(initialNewAssessmentId);
       setPrompt('');
       setSectionType('APTITUDE');
-      setCategory('');
       setDifficulty('MEDIUM');
       setOptionA('');
       setOptionB('');
@@ -116,7 +113,6 @@ export function AdminQuestionEditorModal({
         assessmentId: initialNewAssessmentId,
         prompt: '',
         sectionType: 'APTITUDE',
-        category: '',
         difficulty: 'MEDIUM',
         optionA: '',
         optionB: '',
@@ -138,7 +134,6 @@ export function AdminQuestionEditorModal({
       assessmentId,
       prompt,
       sectionType,
-      category,
       difficulty,
       optionA,
       optionB,
@@ -231,10 +226,6 @@ export function AdminQuestionEditorModal({
       setErrorMsg('Question prompt / problem statement is required.');
       return;
     }
-    if (!category.trim()) {
-      setErrorMsg('Category / topic is required.');
-      return;
-    }
     if (!optionA.trim() || !optionB.trim() || !optionC.trim() || !optionD.trim()) {
       setErrorMsg('All four answer options (A, B, C, D) must be provided.');
       return;
@@ -248,7 +239,6 @@ export function AdminQuestionEditorModal({
       assessment_id: assessmentId.trim(),
       prompt: prompt.trim(),
       section_type: sectionType,
-      category: category.trim(),
       difficulty,
       option_a: optionA.trim(),
       option_b: optionB.trim(),
@@ -262,14 +252,7 @@ export function AdminQuestionEditorModal({
     try {
       await onSave(payload);
     } catch (err: unknown) {
-      if (typeof err === 'object' && err !== null && 'response' in err) {
-        const axErr = err as { response?: { data?: Record<string, string[]> } };
-        setErrorMsg(
-          `Save failed: ${JSON.stringify(axErr.response?.data || 'Server validation error')}`
-        );
-      } else {
-        setErrorMsg('An unexpected error occurred while saving the question.');
-      }
+      setErrorMsg(formatApiError(err, 'Failed to save question.'));
     }
   };
 

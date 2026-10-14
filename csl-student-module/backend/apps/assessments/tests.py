@@ -15,6 +15,7 @@ from apps.assessments.models import (
     AttemptQuestionSnapshot,
     IntegrityEvent,
     AssessmentAuditLog,
+    AssessmentSection,
 )
 from apps.assessments.services import (
     start_assessment_for_candidate,
@@ -701,6 +702,56 @@ class CSLAdminPanelAPITests(TestCase):
         res_toggle = self.client.post(f"/api/csl-admin/questions/{q_id}/toggle/")
         self.assertEqual(res_toggle.status_code, 200)
         self.assertFalse(res_toggle.data["is_active"])
+
+    def test_admin_question_creation_without_category(self):
+        """
+        Verify creating a question does not require a category field.
+        The question is saved, assigned to the selected assessment pool,
+        and classified by section without any category validation error.
+        """
+        self.client.force_login(self.admin_user)
+        assessment = Assessment.objects.create(
+            code="TST-NO-CAT",
+            title="Test No Category Assessment",
+            duration_minutes=30,
+            total_marks=20,
+            status=Assessment.Status.DRAFT,
+        )
+        sec, _ = AssessmentSection.objects.get_or_create(
+            code="LOGICAL",
+            defaults={"name": "Logical Reasoning", "order": 3},
+        )
+        q_data = {
+            "assessment_id": str(assessment.id),
+            "prompt": "Which shape completes the pattern?",
+            "section_type": "LOGICAL",
+            "difficulty": "MEDIUM",
+            "option_a": "Triangle",
+            "option_b": "Circle",
+            "option_c": "Square",
+            "option_d": "Hexagon",
+            "correct_option": "B",
+            "explanation": "Circle follows the alternating pattern.",
+            "is_active": True,
+        }
+        res_create = self.client.post("/api/csl-admin/questions/", q_data, content_type="application/json")
+        self.assertEqual(res_create.status_code, 201)
+        q_id = res_create.data["id"]
+
+        # Confirm question saved in database without requiring category
+        q = QuestionBank.objects.get(id=q_id)
+        self.assertEqual(q.prompt, "Which shape completes the pattern?")
+        self.assertEqual(q.section_type, "LOGICAL")
+        self.assertEqual(q.category, "")
+        self.assertEqual(q.section, sec)
+
+        # Confirm question is in the target assessment's pool
+        self.assertIn(q, assessment.questions.all())
+
+        # Verify querying the assessment questions returns the created question
+        res_list = self.client.get(f"/api/csl-admin/questions/?assessment_id={assessment.id}")
+        self.assertEqual(res_list.status_code, 200)
+        self.assertTrue(any(item["id"] == q_id for item in res_list.data))
 
     def test_admin_config_update_validation(self):
         self.client.force_login(self.admin_user)

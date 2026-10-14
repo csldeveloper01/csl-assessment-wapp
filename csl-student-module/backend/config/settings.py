@@ -101,8 +101,10 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # Database
-# https://docs.djangoproject.com/en/6.1/ref/settings/#databases
-import dj_database_url
+try:
+    import dj_database_url
+except ImportError:
+    dj_database_url = None
 
 DATABASE_URL = os.getenv('DATABASE_URL')
 if ('test' in sys.argv and os.getenv('USE_POSTGRES_TEST') != '1') or os.getenv('DB_ENGINE') == 'sqlite':
@@ -112,7 +114,7 @@ if ('test' in sys.argv and os.getenv('USE_POSTGRES_TEST') != '1') or os.getenv('
             'NAME': ':memory:',
         }
     }
-elif DATABASE_URL:
+elif DATABASE_URL and dj_database_url:
     DATABASES = {
         'default': dj_database_url.config(
             default=DATABASE_URL,
