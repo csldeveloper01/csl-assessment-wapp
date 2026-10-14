@@ -1,5 +1,14 @@
-import { useState, useEffect, useMemo } from 'react';
-import { getAdminConfig, updateAdminConfig, type AdminAssessmentConfig } from '../../api/admin';
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  getAdminConfig,
+  updateAdminConfig,
+  getAdminSections,
+  createAdminSection,
+  updateAdminSection,
+  deleteAdminSection,
+  type AdminAssessmentConfig,
+  type AdminSection,
+} from '../../api/admin';
 
 export function AdminConfigView() {
   const [config, setConfig] = useState<AdminAssessmentConfig | null>(null);
@@ -9,6 +18,21 @@ export function AdminConfigView() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
+  // Reusable Section Library State
+  const [sections, setSections] = useState<AdminSection[]>([]);
+  const [sectionsLoading, setSectionsLoading] = useState(false);
+  const [sectionModalOpen, setSectionModalOpen] = useState(false);
+  const [editingSection, setEditingSection] = useState<AdminSection | null>(null);
+  const [sectionForm, setSectionForm] = useState({
+    name: '',
+    code: '',
+    description: '',
+    is_active: true,
+  });
+  const [sectionSaving, setSectionSaving] = useState(false);
+  const [sectionError, setSectionError] = useState('');
+  const [sectionSuccess, setSectionSuccess] = useState('');
+
   const loadConfig = async () => {
     try {
       setLoading(true);
@@ -16,14 +40,27 @@ export function AdminConfigView() {
       setConfig(data);
       setInitialConfig(data);
     } catch {
-      setError('Failed to fetch active assessment configuration.');
+      setError('Failed to fetch platform configuration.');
     } finally {
       setLoading(false);
     }
   };
 
+  const loadSections = async () => {
+    try {
+      setSectionsLoading(true);
+      const data = await getAdminSections();
+      setSections(data);
+    } catch {
+      console.error('Failed to fetch reusable sections.');
+    } finally {
+      setSectionsLoading(false);
+    }
+  };
+
   useEffect(() => {
     loadConfig();
+    loadSections();
   }, []);
 
   const isDirty = useMemo(() => {
@@ -57,22 +94,12 @@ export function AdminConfigView() {
     setMessage('');
     setError('');
 
-    // Pre-validation: Total Marks must equal Aptitude + Coding count
-    if (config.total_marks !== config.aptitude_count + config.coding_count) {
-      setError(
-        `Total marks (${config.total_marks}) must equal Aptitude count (${config.aptitude_count}) + Coding count (${config.coding_count}) = ${
-          config.aptitude_count + config.coding_count
-        }.`
-      );
-      return;
-    }
-
     setSaving(true);
     try {
       const updated = await updateAdminConfig(config);
       setConfig(updated);
       setInitialConfig(updated);
-      setMessage('Assessment configuration updated and persisted successfully.');
+      setMessage('Platform-wide configuration updated and persisted successfully.');
     } catch (err: unknown) {
       if (typeof err === 'object' && err !== null && 'response' in err) {
         const axErr = err as { response?: { data?: Record<string, string> } };
@@ -85,10 +112,90 @@ export function AdminConfigView() {
     }
   };
 
+  // Reusable Section handlers
+  const handleOpenCreateSection = () => {
+    setEditingSection(null);
+    setSectionForm({
+      name: '',
+      code: '',
+      description: '',
+      is_active: true,
+    });
+    setSectionError('');
+    setSectionModalOpen(true);
+  };
+
+  const handleOpenEditSection = (section: AdminSection) => {
+    setEditingSection(section);
+    setSectionForm({
+      name: section.name,
+      code: section.code,
+      description: section.description || '',
+      is_active: section.is_active,
+    });
+    setSectionError('');
+    setSectionModalOpen(true);
+  };
+
+  const handleSaveSection = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!sectionForm.name.trim() || !sectionForm.code.trim()) {
+      setSectionError('Section name and code are required.');
+      return;
+    }
+
+    setSectionSaving(true);
+    setSectionError('');
+    try {
+      if (editingSection) {
+        await updateAdminSection(editingSection.id, {
+          name: sectionForm.name.trim(),
+          code: sectionForm.code.trim().toUpperCase(),
+          description: sectionForm.description.trim(),
+          is_active: sectionForm.is_active,
+        });
+        setSectionSuccess(`Section "${sectionForm.name}" updated successfully.`);
+      } else {
+        await createAdminSection({
+          name: sectionForm.name.trim(),
+          code: sectionForm.code.trim().toUpperCase(),
+          description: sectionForm.description.trim(),
+          is_active: sectionForm.is_active,
+        });
+        setSectionSuccess(`New section "${sectionForm.name}" created and added to the reusable library.`);
+      }
+      setSectionModalOpen(false);
+      loadSections();
+    } catch (err: any) {
+      const msg = err.response?.data?.code?.[0] || err.response?.data?.detail || 'Failed to save section.';
+      setSectionError(msg);
+    } finally {
+      setSectionSaving(false);
+    }
+  };
+
+  const handleDeleteSection = async (section: AdminSection) => {
+    const confirmDelete = window.confirm(
+      `Are you sure you want to delete the reusable section "${section.name}" (${section.code})?\n\nNote: If this section is referenced by existing assessments or question records, deletion will be safely rejected.`
+    );
+    if (!confirmDelete) return;
+
+    setSectionError('');
+    setSectionSuccess('');
+    try {
+      const res = await deleteAdminSection(section.id);
+      setSectionSuccess(res.message || `Section "${section.name}" deleted successfully.`);
+      loadSections();
+    } catch (err: any) {
+      const detailMsg = err.response?.data?.detail || err.message || 'Cannot delete section.';
+      alert(`Deletion Denied: ${detailMsg}`);
+    }
+  };
+
   if (loading) {
     return (
       <div style={{ padding: '64px', textAlign: 'center', color: '#64748B' }}>
-        <div style={{ fontSize: '14px', fontWeight: 600 }}>Loading assessment configuration...</div>
+        <div style={{ fontSize: '14px', fontWeight: 600 }}>Loading platform configuration...</div>
       </div>
     );
   }
@@ -127,11 +234,8 @@ export function AdminConfigView() {
     );
   }
 
-  const marksSum = config.aptitude_count + config.coding_count;
-  const isMarksValid = config.total_marks === marksSum;
-
   return (
-    <div style={{ maxWidth: '1040px', margin: '0 auto' }}>
+    <div style={{ maxWidth: '1040px', margin: '0 auto', padding: '24px 16px' }}>
       {/* Header & Status Bar */}
       <div
         style={{
@@ -145,10 +249,10 @@ export function AdminConfigView() {
       >
         <div>
           <h2 style={{ fontSize: '22px', fontWeight: 800, color: '#0B2E6F', margin: '0 0 6px 0', letterSpacing: '-0.02em' }}>
-            Assessment Policy & Configuration
+            Platform Policy & Section Library
           </h2>
           <p style={{ fontSize: '13px', color: '#64748B', margin: 0 }}>
-            Authoritative parameters controlling duration, question distribution, passing marks, and proctoring thresholds.
+            Authoritative platform-wide parameters, attempt policies, and the centralized library of reusable assessment sections.
           </p>
         </div>
 
@@ -244,7 +348,7 @@ export function AdminConfigView() {
                   <polyline points="17 21 17 13 7 13 7 21"></polyline>
                   <polyline points="7 3 7 8 15 8"></polyline>
                 </svg>
-                <span>Save Changes</span>
+                <span>Save Platform Policies</span>
               </>
             )}
           </button>
@@ -300,7 +404,7 @@ export function AdminConfigView() {
         </div>
       )}
 
-      {/* Snapshot Safety Callout */}
+      {/* Architecture Separation Callout */}
       <div
         style={{
           display: 'flex',
@@ -333,16 +437,16 @@ export function AdminConfigView() {
         </div>
         <div style={{ fontSize: '13px', lineHeight: 1.5, color: '#475569' }}>
           <strong style={{ color: '#0B2E6F', display: 'block', marginBottom: '2px', fontSize: '13px' }}>
-            Snapshot Isolation Guarantee Active
+            Platform-Wide Governance Active
           </strong>
-          Modifications made here immediately apply to subsequent candidate sessions. All candidate attempts
-          currently in progress or finalized retain their immutable snapshot configuration, ensuring zero score disruption
-          or mid-assessment inconsistency.
+          Parameters configured here apply as global defaults and security guardrails across the platform.
+          Specific assessment rounds independently define their own timing, total marks, and section allocations under
+          the <strong>Assessments</strong> tab.
         </div>
       </div>
 
-      <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
-        {/* Section 1: Assessment Identity & Time */}
+      <form onSubmit={handleSave} style={{ display: 'flex', flexDirection: 'column', gap: '24px', marginBottom: '40px' }}>
+        {/* Section 1: Assessment Portal Identity & Defaults */}
         <div
           style={{
             backgroundColor: '#FFFFFF',
@@ -371,14 +475,14 @@ export function AdminConfigView() {
               </svg>
             </div>
             <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
-              1. Assessment Identity & Duration
+              1. Platform Assessment Identity & Status
             </h3>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '20px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
-                Assessment Portal Title
+                Default Assessment Portal Title
               </label>
               <input
                 type="text"
@@ -396,21 +500,18 @@ export function AdminConfigView() {
                 }}
               />
               <span style={{ fontSize: '11px', color: '#64748B', marginTop: '4px', display: 'block' }}>
-                Displayed to candidates on the login screen, test instructions, and certificate headers.
+                Displayed as the fallback title on candidate registration and test instructions.
               </span>
             </div>
 
             <div>
               <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
-                Duration (Minutes)
+                Assessment Engine Active
               </label>
-              <input
-                type="number"
-                name="duration_minutes"
-                min={1}
-                max={300}
-                value={config.duration_minutes}
-                onChange={handleChange}
+              <select
+                name="is_active"
+                value={config.is_active ? 'true' : 'false'}
+                onChange={(e) => setConfig({ ...config, is_active: e.target.value === 'true' })}
                 style={{
                   width: '100%',
                   padding: '10px 14px',
@@ -419,163 +520,43 @@ export function AdminConfigView() {
                   fontSize: '14px',
                   outlineColor: '#1455B8',
                   boxSizing: 'border-box',
-                  fontFamily: 'monospace',
-                  fontWeight: 700,
+                  backgroundColor: '#FFFFFF',
+                  fontWeight: 600,
                 }}
-              />
+              >
+                <option value="true">Enabled (Accepting Test Sessions)</option>
+                <option value="false">Disabled (Maintenance Mode)</option>
+              </select>
               <span style={{ fontSize: '11px', color: '#64748B', marginTop: '4px', display: 'block' }}>
-                Standard: 60 minutes (1 hour)
+                Global switch governing student assessment eligibility.
               </span>
             </div>
+          </div>
+
+          <div style={{ marginTop: '16px' }}>
+            <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
+              Default Instructions & Guidelines
+            </label>
+            <textarea
+              name="description"
+              rows={3}
+              value={config.description || ''}
+              onChange={handleChange}
+              placeholder="Candidate instructions shown when assessment-specific description is omitted..."
+              style={{
+                width: '100%',
+                padding: '10px 14px',
+                borderRadius: '8px',
+                border: '1px solid #CBD5E1',
+                fontSize: '13px',
+                outlineColor: '#1455B8',
+                boxSizing: 'border-box',
+              }}
+            />
           </div>
         </div>
 
-        {/* Section 2: Question Distribution & Scoring */}
-        <div
-          style={{
-            backgroundColor: '#FFFFFF',
-            borderRadius: '14px',
-            border: '1px solid #E2E8F0',
-            padding: '24px',
-            boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '18px' }}>
-            <div
-              style={{
-                width: '28px',
-                height: '28px',
-                borderRadius: '6px',
-                backgroundColor: 'rgba(20, 85, 184, 0.08)',
-                color: '#1455B8',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-              }}
-            >
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <line x1="18" y1="20" x2="18" y2="10"></line>
-                <line x1="12" y1="20" x2="12" y2="4"></line>
-                <line x1="6" y1="20" x2="6" y2="14"></line>
-              </svg>
-            </div>
-            <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
-              2. Section Distribution & Scoring Structure
-            </h3>
-          </div>
-
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '20px' }}>
-            <div>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
-                Aptitude Question Count
-              </label>
-              <input
-                type="number"
-                name="aptitude_count"
-                min={1}
-                value={config.aptitude_count}
-                onChange={handleChange}
-                style={{
-                  width: '100%',
-                  padding: '10px 14px',
-                  borderRadius: '8px',
-                  border: '1px solid #CBD5E1',
-                  fontSize: '14px',
-                  outlineColor: '#1455B8',
-                  boxSizing: 'border-box',
-                  fontFamily: 'monospace',
-                  fontWeight: 700,
-                }}
-              />
-              <span style={{ fontSize: '11px', color: '#64748B', marginTop: '4px', display: 'block' }}>
-                Default quota: 25 items
-              </span>
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
-                Coding Fundamentals Count
-              </label>
-              <input
-                type="number"
-                name="coding_count"
-                min={1}
-                value={config.coding_count}
-                onChange={handleChange}
-                style={{
-                  width: '100%',
-                  padding: '10px 14px',
-                  borderRadius: '8px',
-                  border: '1px solid #CBD5E1',
-                  fontSize: '14px',
-                  outlineColor: '#1455B8',
-                  boxSizing: 'border-box',
-                  fontFamily: 'monospace',
-                  fontWeight: 700,
-                }}
-              />
-              <span style={{ fontSize: '11px', color: '#64748B', marginTop: '4px', display: 'block' }}>
-                Default quota: 25 items
-              </span>
-            </div>
-
-            <div>
-              <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
-                Total Assessment Marks
-              </label>
-              <input
-                type="number"
-                name="total_marks"
-                min={1}
-                value={config.total_marks}
-                onChange={handleChange}
-                style={{
-                  width: '100%',
-                  padding: '10px 14px',
-                  borderRadius: '8px',
-                  border: `1px solid ${isMarksValid ? '#CBD5E1' : '#EF4444'}`,
-                  fontSize: '14px',
-                  outlineColor: '#1455B8',
-                  boxSizing: 'border-box',
-                  fontFamily: 'monospace',
-                  fontWeight: 700,
-                }}
-              />
-              <span style={{ fontSize: '11px', color: isMarksValid ? '#64748B' : '#DC2626', marginTop: '4px', display: 'block' }}>
-                {isMarksValid ? '✓ Exactly equals sum' : `⚠️ Must equal ${marksSum} marks`}
-              </span>
-            </div>
-          </div>
-
-          {/* Scoring balance helper bar */}
-          <div
-            style={{
-              marginTop: '16px',
-              padding: '12px 16px',
-              borderRadius: '8px',
-              backgroundColor: isMarksValid ? '#F0FDF4' : '#FEF2F2',
-              border: `1px solid ${isMarksValid ? '#BBF7D0' : '#FECACA'}`,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              fontSize: '12px',
-            }}
-          >
-            <div style={{ color: isMarksValid ? '#166534' : '#991B1B', fontWeight: 600 }}>
-              Distribution Check: {config.aptitude_count} Aptitude + {config.coding_count} Coding = {marksSum} items / {config.total_marks} marks total
-            </div>
-            <span
-              style={{
-                fontWeight: 700,
-                color: isMarksValid ? '#15803D' : '#DC2626',
-              }}
-            >
-              {isMarksValid ? 'Valid Configuration ✓' : 'Sum Mismatch Error ⚠️'}
-            </span>
-          </div>
-        </div>
-
-        {/* Section 3: Attempt & Integrity Policy */}
+        {/* Section 2: Proctoring & Attempt Policy */}
         <div
           style={{
             backgroundColor: '#FFFFFF',
@@ -603,14 +584,14 @@ export function AdminConfigView() {
               </svg>
             </div>
             <h3 style={{ fontSize: '15px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
-              3. Proctoring & Attempt Integrity Policy
+              2. Platform Proctoring & Attempt Policies
             </h3>
           </div>
 
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '20px' }}>
             <div>
               <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '6px' }}>
-                Max Attempts per Candidate
+                Default Max Attempts per Candidate
               </label>
               <input
                 type="number"
@@ -701,66 +682,374 @@ export function AdminConfigView() {
             </div>
           </div>
         </div>
+      </form>
 
-        {/* Floating/Bottom Action Bar */}
-        <div
-          style={{
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            padding: '16px 24px',
-            backgroundColor: '#FFFFFF',
-            borderRadius: '12px',
-            border: '1px solid #E2E8F0',
-            boxShadow: '0 2px 8px rgba(0, 0, 0, 0.03)',
-          }}
-        >
-          <div style={{ fontSize: '12px', color: '#64748B' }}>
-            Configuration Version ID: <strong style={{ color: '#0B2E6F' }}>#{config.id}</strong> • Last Updated:{' '}
-            {config.updated_at ? new Date(config.updated_at).toLocaleString() : 'Recently'}
-          </div>
-
-          <div style={{ display: 'flex', gap: '10px' }}>
-            {isDirty && (
-              <button
-                type="button"
-                onClick={handleReset}
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          SECTION 3: REUSABLE ASSESSMENT SECTION LIBRARY
+          ───────────────────────────────────────────────────────────────────────────── */}
+      <div
+        style={{
+          backgroundColor: '#FFFFFF',
+          borderRadius: '14px',
+          border: '1px solid #E2E8F0',
+          padding: '24px',
+          boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '18px', flexWrap: 'wrap', gap: '12px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <div
                 style={{
-                  padding: '9px 18px',
-                  backgroundColor: '#FFFFFF',
-                  border: '1px solid #CBD5E1',
-                  borderRadius: '8px',
-                  fontSize: '13px',
-                  fontWeight: 600,
-                  color: '#475569',
-                  cursor: 'pointer',
+                  width: '28px',
+                  height: '28px',
+                  borderRadius: '6px',
+                  backgroundColor: 'rgba(20, 85, 184, 0.08)',
+                  color: '#1455B8',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
                 }}
               >
-                Revert Changes
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <rect x="3" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="3" width="7" height="7"></rect>
+                  <rect x="14" y="14" width="7" height="7"></rect>
+                  <rect x="3" y="14" width="7" height="7"></rect>
+                </svg>
+              </div>
+              <h3 style={{ fontSize: '16px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
+                Reusable Assessment Section Library
+              </h3>
+            </div>
+            <p style={{ fontSize: '13px', color: '#64748B', margin: '4px 0 0 0' }}>
+              Define reusable sections (e.g. Aptitude, Coding, Logical Reasoning, Verbal). Selected sections can be dynamically allocated to any assessment.
+            </p>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleOpenCreateSection}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '9px 16px',
+              backgroundColor: '#0B2E6F',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: 700,
+              cursor: 'pointer',
+              boxShadow: '0 2px 6px rgba(11, 46, 111, 0.15)',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            + Create Reusable Section
+          </button>
+        </div>
+
+        {sectionSuccess && (
+          <div
+            style={{
+              padding: '10px 14px',
+              backgroundColor: '#ECFDF5',
+              border: '1px solid #A7F3D0',
+              color: '#065F46',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: 600,
+              marginBottom: '16px',
+            }}
+          >
+            {sectionSuccess}
+          </div>
+        )}
+
+        {/* Section Table */}
+        {sectionsLoading ? (
+          <div style={{ padding: '32px', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
+            Loading sections library...
+          </div>
+        ) : sections.length === 0 ? (
+          <div style={{ padding: '32px', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
+            No reusable sections defined yet. Click "+ Create Reusable Section" to create one.
+          </div>
+        ) : (
+          <div style={{ overflowX: 'auto', border: '1px solid #E2E8F0', borderRadius: '8px' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+              <thead>
+                <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>SECTION CODE</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>NAME & DESCRIPTION</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>QUESTIONS POOL</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>ASSESSMENTS USING</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>STATUS</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569', textAlign: 'right' }}>ACTIONS</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sections.map((sec) => (
+                  <tr key={sec.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                    <td style={{ padding: '12px 14px' }}>
+                      <span
+                        style={{
+                          backgroundColor: '#EEF2FF',
+                          color: '#3730A3',
+                          fontWeight: 700,
+                          fontSize: '11px',
+                          padding: '3px 8px',
+                          borderRadius: '4px',
+                        }}
+                      >
+                        {sec.code}
+                      </span>
+                    </td>
+                    <td style={{ padding: '12px 14px' }}>
+                      <div style={{ fontWeight: 700, color: '#0F172A' }}>{sec.name}</div>
+                      {sec.description && (
+                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                          {sec.description}
+                        </div>
+                      )}
+                    </td>
+                    <td style={{ padding: '12px 14px', textAlign: 'center', fontWeight: 700, color: '#0B2E6F' }}>
+                      {sec.question_count ?? 0}
+                    </td>
+                    <td style={{ padding: '12px 14px', textAlign: 'center', fontWeight: 700, color: '#0B2E6F' }}>
+                      {sec.assessment_count ?? 0}
+                    </td>
+                    <td style={{ padding: '12px 14px', textAlign: 'center' }}>
+                      <span
+                        style={{
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          backgroundColor: sec.is_active ? '#DCFCE7' : '#F1F5F9',
+                          color: sec.is_active ? '#15803D' : '#64748B',
+                        }}
+                      >
+                        {sec.is_active ? 'Active' : 'Inactive'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '12px 14px', textAlign: 'right' }}>
+                      <div style={{ display: 'flex', gap: '8px', justifyContent: 'flex-end' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleOpenEditSection(sec)}
+                          style={{
+                            padding: '4px 10px',
+                            backgroundColor: '#FEF3C7',
+                            color: '#92400E',
+                            border: '1px solid #FDE68A',
+                            borderRadius: '5px',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Edit
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteSection(sec)}
+                          style={{
+                            padding: '4px 10px',
+                            backgroundColor: '#FFF1F2',
+                            color: '#BE123C',
+                            border: '1px solid #FDA4AF',
+                            borderRadius: '5px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* ─────────────────────────────────────────────────────────────────────────────
+          CREATE / EDIT SECTION MODAL
+          ───────────────────────────────────────────────────────────────────────────── */}
+      {sectionModalOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0, 0, 0, 0.5)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              padding: '24px 28px',
+              width: '460px',
+              maxWidth: '90vw',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <h3 style={{ fontSize: '17px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
+                {editingSection ? `Edit Section: ${editingSection.name}` : 'Create Reusable Section'}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setSectionModalOpen(false)}
+                style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: '#94A3B8' }}
+              >
+                ✕
               </button>
+            </div>
+
+            {sectionError && (
+              <div
+                style={{
+                  padding: '8px 12px',
+                  backgroundColor: '#FEF2F2',
+                  border: '1px solid #FCA5A5',
+                  color: '#B91C1C',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  marginBottom: '14px',
+                }}
+              >
+                {sectionError}
+              </div>
             )}
 
-            <button
-              type="submit"
-              disabled={saving || !isDirty}
-              style={{
-                padding: '9px 24px',
-                backgroundColor: !isDirty || saving ? '#94A3B8' : '#1455B8',
-                color: '#FFFFFF',
-                border: 'none',
-                borderRadius: '8px',
-                fontSize: '13px',
-                fontWeight: 700,
-                cursor: !isDirty || saving ? 'not-allowed' : 'pointer',
-                boxShadow: isDirty ? '0 2px 8px rgba(20, 85, 184, 0.25)' : 'none',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              {saving ? 'Saving...' : 'Save & Persist Configuration'}
-            </button>
+            <form onSubmit={handleSaveSection}>
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Section Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Logical Reasoning, Verbal Ability"
+                  value={sectionForm.name}
+                  onChange={(e) => setSectionForm({ ...sectionForm, name: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #CBD5E1',
+                    fontSize: '13px',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Section Code * (Uppercase, Unique)
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. LOGICAL, VERBAL, CODING"
+                  value={sectionForm.code}
+                  onChange={(e) => setSectionForm({ ...sectionForm, code: e.target.value.toUpperCase() })}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #CBD5E1',
+                    fontSize: '13px',
+                    boxSizing: 'border-box',
+                    textTransform: 'uppercase',
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '14px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Purpose or focus topics of this section..."
+                  value={sectionForm.description}
+                  onChange={(e) => setSectionForm({ ...sectionForm, description: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '8px 12px',
+                    borderRadius: '6px',
+                    border: '1px solid #CBD5E1',
+                    fontSize: '13px',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '20px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <input
+                  type="checkbox"
+                  id="section-is-active"
+                  checked={sectionForm.is_active}
+                  onChange={(e) => setSectionForm({ ...sectionForm, is_active: e.target.checked })}
+                  style={{ width: '16px', height: '16px' }}
+                />
+                <label htmlFor="section-is-active" style={{ fontSize: '13px', color: '#334155', cursor: 'pointer', fontWeight: 600 }}>
+                  Active (Available for assessment allocation)
+                </label>
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+                <button
+                  type="button"
+                  onClick={() => setSectionModalOpen(false)}
+                  style={{
+                    backgroundColor: '#F1F5F9',
+                    color: '#475569',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 14px',
+                    fontSize: '13px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={sectionSaving}
+                  style={{
+                    backgroundColor: '#0B2E6F',
+                    color: '#FFFFFF',
+                    border: 'none',
+                    borderRadius: '6px',
+                    padding: '8px 18px',
+                    fontSize: '13px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {sectionSaving ? 'Saving...' : editingSection ? 'Save Changes' : 'Create Section'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
-      </form>
+      )}
     </div>
   );
 }

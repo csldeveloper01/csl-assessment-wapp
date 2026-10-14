@@ -90,6 +90,33 @@ export interface AdminAssessmentAuditLog {
   details: Record<string, unknown>;
 }
 
+export interface AdminSection {
+  id: number;
+  name: string;
+  code: string;
+  description: string;
+  is_active: boolean;
+  order: number;
+  questions_count?: number;
+  question_count?: number;
+  assessments_count?: number;
+  assessment_count?: number;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface AdminSectionAllocation {
+  id?: number;
+  section?: number;
+  section_id: number;
+  section_name?: string;
+  section_code?: string;
+  question_count: number;
+  marks_per_question: number;
+  order: number;
+  available_questions_count?: number;
+}
+
 export interface AdminAssessment {
   id: string;
   code: string;
@@ -107,6 +134,7 @@ export interface AdminAssessment {
   total_marks: number;
   aptitude_count: number;
   coding_count: number;
+  sections?: AdminSectionAllocation[];
   max_attempts: number;
   max_tab_switches_warning: number;
   auto_submit_on_tab_limit: boolean;
@@ -149,7 +177,9 @@ export interface AdminCandidate {
 export interface AdminQuestion {
   id: number;
   prompt: string;
-  section_type: 'APTITUDE' | 'CODING';
+  section_type: string;
+  section_id?: number | null;
+  section_name?: string;
   category: string;
   difficulty: 'EASY' | 'MEDIUM' | 'HARD';
   option_a: string;
@@ -170,10 +200,10 @@ export interface AdminAssessmentConfig {
   id: number;
   title: string;
   description: string;
-  duration_minutes: number;
-  total_marks: number;
-  aptitude_count: number;
-  coding_count: number;
+  duration_minutes?: number;
+  total_marks?: number;
+  aptitude_count?: number;
+  coding_count?: number;
   max_attempts: number;
   max_tab_switches_warning: number;
   auto_submit_on_tab_limit: boolean;
@@ -503,7 +533,7 @@ export async function toggleAdminQuestion(id: number): Promise<{ id: number; is_
 export async function bulkUpdateAdminQuestions(
   ids: number[],
   updates: {
-    section_type?: 'APTITUDE' | 'CODING';
+    section_type?: string;
     category?: string;
     difficulty?: 'EASY' | 'MEDIUM' | 'HARD';
     is_active?: boolean;
@@ -550,6 +580,27 @@ export async function getAdminConfig(): Promise<AdminAssessmentConfig> {
 
 export async function updateAdminConfig(data: Partial<AdminAssessmentConfig>): Promise<AdminAssessmentConfig> {
   const res = await adminApi.put<AdminAssessmentConfig>('/config/', data);
+  return res.data;
+}
+
+// ─── REUSABLE SECTION LIBRARY MODULE ────────────────────────────────────────
+export async function getAdminSections(): Promise<AdminSection[]> {
+  const res = await adminApi.get<AdminSection[]>('/sections/');
+  return res.data;
+}
+
+export async function createAdminSection(data: Partial<AdminSection>): Promise<AdminSection> {
+  const res = await adminApi.post<AdminSection>('/sections/', data);
+  return res.data;
+}
+
+export async function updateAdminSection(id: number, data: Partial<AdminSection>): Promise<AdminSection> {
+  const res = await adminApi.patch<AdminSection>(`/sections/${id}/`, data);
+  return res.data;
+}
+
+export async function deleteAdminSection(id: number): Promise<{ message?: string }> {
+  const res = await adminApi.delete(`/sections/${id}/`);
   return res.data;
 }
 

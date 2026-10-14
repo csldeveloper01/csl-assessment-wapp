@@ -10,20 +10,31 @@ import {
   closeAdminAssessment,
   archiveAdminAssessment,
   assignAdminAssessmentColleges,
-  releaseAdminAssessmentResults,
   getAdminColleges,
+  getAdminSections,
+  createAdminSection,
   type AdminAssessment,
   type AdminAssessmentDetail,
   type AdminCollege,
+  type AdminSection,
 } from '../../api/admin';
 
 interface AdminAssessmentsViewProps {
   onNavigateToQuestions?: (assessmentId?: string) => void;
 }
 
+interface AssessmentSectionDraft {
+  section_id: number;
+  name: string;
+  code: string;
+  question_count: number;
+  marks_per_question: number;
+}
+
 export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessmentsViewProps) {
   const [assessments, setAssessments] = useState<AdminAssessment[]>([]);
   const [colleges, setColleges] = useState<AdminCollege[]>([]);
+  const [availableSections, setAvailableSections] = useState<AdminSection[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -33,6 +44,13 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [showCloseModal, setShowCloseModal] = useState(false);
+
+  // Inline Section Creation Modal
+  const [showInlineSectionModal, setShowInlineSectionModal] = useState(false);
+  const [inlineSectionForm, setInlineSectionForm] = useState({ name: '', code: '', description: '' });
+  const [inlineSectionSaving, setInlineSectionSaving] = useState(false);
+  const [inlineSectionError, setInlineSectionError] = useState('');
+  const [inlineSectionTarget, setInlineSectionTarget] = useState<'create' | 'edit'>('create');
 
   // Selected assessment for actions
   const [selectedAssessment, setSelectedAssessment] = useState<AdminAssessment | null>(null);
@@ -48,15 +66,16 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
   const [selectedCollegeIdsForAssign, setSelectedCollegeIdsForAssign] = useState<number[]>([]);
   const [savingColleges, setSavingColleges] = useState(false);
 
+  // Dynamic Section Allocation states for Create & Edit
+  const [createSections, setCreateSections] = useState<AssessmentSectionDraft[]>([]);
+  const [editSections, setEditSections] = useState<AssessmentSectionDraft[]>([]);
+
   // Create Form State
   const [createForm, setCreateForm] = useState({
     code: '',
     title: '',
     description: '',
     duration_minutes: 60,
-    total_marks: 50,
-    aptitude_count: 25,
-    coding_count: 25,
     max_attempts: 1,
     max_tab_switches_warning: 2,
     auto_submit_on_tab_limit: true,
@@ -73,9 +92,6 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
     title: '',
     description: '',
     duration_minutes: 60,
-    total_marks: 50,
-    aptitude_count: 25,
-    coding_count: 25,
     max_attempts: 1,
     max_tab_switches_warning: 2,
     auto_submit_on_tab_limit: true,
@@ -109,9 +125,19 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
     }
   };
 
+  const fetchSections = async () => {
+    try {
+      const data = await getAdminSections();
+      setAvailableSections(data);
+    } catch (err) {
+      console.error('Failed to fetch reusable sections:', err);
+    }
+  };
+
   useEffect(() => {
     fetchAssessments();
     fetchColleges();
+    fetchSections();
   }, [search, statusFilter]);
 
   const handleOpenDetail = async (assessment: AdminAssessment) => {
@@ -232,22 +258,35 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
     }
   };
 
-  const handleToggleReleaseResults = async (assessment: AdminAssessment, release: boolean) => {
-    try {
-      await releaseAdminAssessmentResults(assessment.id, release);
-      setAssessments((prev) =>
-        prev.map((a) => (a.id === assessment.id ? { ...a, is_results_released: release } : a))
-      );
-      if (selectedAssessment?.id === assessment.id) {
-        setSelectedAssessment((prev) => (prev ? { ...prev, is_results_released: release } : null));
-      }
-      setActionMessage({
-        text: `Results for assessment "${assessment.title}" are now ${release ? 'RELEASED to candidates' : 'WITHHELD'}.`,
-        type: 'success',
-      });
-    } catch {
-      setActionMessage({ text: 'Failed to update result release status.', type: 'error' });
+  // Section Allocation Helpers
+  const handleOpenCreateModal = () => {
+    setCreateError('');
+    setCreateForm({
+      code: '',
+      title: '',
+      description: '',
+      duration_minutes: 60,
+      max_attempts: 1,
+      max_tab_switches_warning: 2,
+      auto_submit_on_tab_limit: true,
+      close_policy: 'ALLOW_FINISH',
+      eligible_college_ids: [],
+    });
+
+    // Initialize with available sections or default Aptitude + Coding
+    if (availableSections.length > 0) {
+      const defaultAllocations: AssessmentSectionDraft[] = availableSections.slice(0, 2).map((s) => ({
+        section_id: s.id,
+        name: s.name,
+        code: s.code,
+        question_count: 25,
+        marks_per_question: 1,
+      }));
+      setCreateSections(defaultAllocations);
+    } else {
+      setCreateSections([]);
     }
+    setShowCreateModal(true);
   };
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
@@ -261,13 +300,42 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
       setCreateError('Assessment title is required.');
       return;
     }
-    const total = Number(createForm.aptitude_count) + Number(createForm.coding_count);
+    if (createSections.length === 0) {
+      setCreateError('Please configure at least one section for this assessment.');
+      return;
+    }
+
+    const totalQuestions = createSections.reduce((sum, s) => sum + Number(s.question_count || 0), 0);
+    const totalMarks = createSections.reduce(
+      (sum, s) => sum + Number(s.question_count || 0) * Number(s.marks_per_question || 1),
+      0
+    );
+
+    if (totalQuestions <= 0) {
+      setCreateError('Total questions must be greater than 0.');
+      return;
+    }
+
+    const payloadSections = createSections.map((s, idx) => ({
+      section_id: s.section_id,
+      question_count: Number(s.question_count),
+      marks_per_question: Number(s.marks_per_question || 1),
+      order: idx,
+    }));
+
+    // Find aptitude and coding counts for legacy fallback
+    const aptSec = createSections.find((s) => s.code.toUpperCase() === 'APTITUDE');
+    const codSec = createSections.find((s) => s.code.toUpperCase() === 'CODING');
+
     setCreateSubmitting(true);
     try {
       await createAdminAssessment({
         ...createForm,
         code: createForm.code.trim().toUpperCase(),
-        total_marks: total,
+        total_marks: totalMarks,
+        aptitude_count: aptSec ? Number(aptSec.question_count) : Math.floor(totalQuestions / 2),
+        coding_count: codSec ? Number(codSec.question_count) : Math.ceil(totalQuestions / 2),
+        sections: payloadSections,
       });
       setShowCreateModal(false);
       fetchAssessments();
@@ -288,14 +356,47 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
       title: assessment.title,
       description: assessment.description || '',
       duration_minutes: assessment.duration_minutes,
-      total_marks: assessment.total_marks,
-      aptitude_count: assessment.aptitude_count,
-      coding_count: assessment.coding_count,
       max_attempts: assessment.max_attempts,
       max_tab_switches_warning: assessment.max_tab_switches_warning,
       auto_submit_on_tab_limit: assessment.auto_submit_on_tab_limit,
       close_policy: (assessment.close_policy as any) || 'ALLOW_FINISH',
     });
+
+    if (assessment.sections && assessment.sections.length > 0) {
+      setEditSections(
+        assessment.sections.map((s) => ({
+          section_id: s.section_id ?? s.section ?? 0,
+          name: s.section_name || s.section_code || `Section #${s.section_id ?? s.section}`,
+          code: s.section_code || '',
+          question_count: s.question_count,
+          marks_per_question: s.marks_per_question || 1,
+        }))
+      );
+    } else {
+      // Legacy fallback: Aptitude + Coding
+      const fallbackList: AssessmentSectionDraft[] = [];
+      const aptLib = availableSections.find((s) => s.code.toUpperCase() === 'APTITUDE');
+      const codLib = availableSections.find((s) => s.code.toUpperCase() === 'CODING');
+      if (aptLib) {
+        fallbackList.push({
+          section_id: aptLib.id,
+          name: aptLib.name,
+          code: aptLib.code,
+          question_count: assessment.aptitude_count || 25,
+          marks_per_question: 1,
+        });
+      }
+      if (codLib) {
+        fallbackList.push({
+          section_id: codLib.id,
+          name: codLib.name,
+          code: codLib.code,
+          question_count: assessment.coding_count || 25,
+          marks_per_question: 1,
+        });
+      }
+      setEditSections(fallbackList);
+    }
     setShowEditModal(true);
   };
 
@@ -310,13 +411,32 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
       setEditError('Duration must be at least 1 minute.');
       return;
     }
-    const apt = Number(editForm.aptitude_count);
-    const cod = Number(editForm.coding_count);
-    if (apt < 0 || cod < 0 || (apt + cod < 1)) {
-      setEditError('Assessment must include at least 1 Aptitude or Coding question.');
+    if (editSections.length === 0) {
+      setEditError('Assessment must include at least 1 section.');
       return;
     }
-    const total = apt + cod;
+
+    const totalQuestions = editSections.reduce((sum, s) => sum + Number(s.question_count || 0), 0);
+    const totalMarks = editSections.reduce(
+      (sum, s) => sum + Number(s.question_count || 0) * Number(s.marks_per_question || 1),
+      0
+    );
+
+    if (totalQuestions <= 0) {
+      setEditError('Total question count across sections must be greater than 0.');
+      return;
+    }
+
+    const payloadSections = editSections.map((s, idx) => ({
+      section_id: s.section_id,
+      question_count: Number(s.question_count),
+      marks_per_question: Number(s.marks_per_question || 1),
+      order: idx,
+    }));
+
+    const aptSec = editSections.find((s) => s.code.toUpperCase() === 'APTITUDE');
+    const codSec = editSections.find((s) => s.code.toUpperCase() === 'CODING');
+
     setEditSubmitting(true);
     try {
       const updated = await updateAdminAssessment(editForm.id, {
@@ -324,13 +444,14 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
         title: editForm.title.trim(),
         description: editForm.description,
         duration_minutes: Number(editForm.duration_minutes),
-        aptitude_count: apt,
-        coding_count: cod,
-        total_marks: total,
+        total_marks: totalMarks,
+        aptitude_count: aptSec ? Number(aptSec.question_count) : Math.floor(totalQuestions / 2),
+        coding_count: codSec ? Number(codSec.question_count) : Math.ceil(totalQuestions / 2),
         max_attempts: Number(editForm.max_attempts),
         max_tab_switches_warning: Number(editForm.max_tab_switches_warning),
         auto_submit_on_tab_limit: editForm.auto_submit_on_tab_limit,
         close_policy: editForm.close_policy,
+        sections: payloadSections,
       });
       setShowEditModal(false);
       fetchAssessments();
@@ -353,6 +474,52 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
       setEditError(detailMsg);
     } finally {
       setEditSubmitting(false);
+    }
+  };
+
+  // Inline Section Creation Submit (without losing assessment form state)
+  const handleInlineSectionSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!inlineSectionForm.name.trim() || !inlineSectionForm.code.trim()) {
+      setInlineSectionError('Name and unique code are required.');
+      return;
+    }
+
+    setInlineSectionSaving(true);
+    setInlineSectionError('');
+    try {
+      const newSec = await createAdminSection({
+        name: inlineSectionForm.name.trim(),
+        code: inlineSectionForm.code.trim().toUpperCase(),
+        description: inlineSectionForm.description.trim(),
+        is_active: true,
+      });
+
+      // Refresh available sections
+      await fetchSections();
+
+      // Automatically add new section to the active modal's draft allocations
+      const draftItem: AssessmentSectionDraft = {
+        section_id: newSec.id,
+        name: newSec.name,
+        code: newSec.code,
+        question_count: 10,
+        marks_per_question: 1,
+      };
+
+      if (inlineSectionTarget === 'create') {
+        setCreateSections((prev) => [...prev, draftItem]);
+      } else {
+        setEditSections((prev) => [...prev, draftItem]);
+      }
+
+      setShowInlineSectionModal(false);
+      setInlineSectionForm({ name: '', code: '', description: '' });
+    } catch (err: any) {
+      const msg = err.response?.data?.code?.[0] || err.response?.data?.detail || 'Failed to create reusable section.';
+      setInlineSectionError(msg);
+    } finally {
+      setInlineSectionSaving(false);
     }
   };
 
@@ -408,14 +575,11 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
             Assessment Lifecycle Management
           </h1>
           <p style={{ margin: '4px 0 0', color: '#556987', fontSize: '14px' }}>
-            Configure independent diagnostic rounds, assign participating colleges, and control server-side opening states.
+            Configure independent diagnostic rounds with dynamic section allocations, assign participating colleges, and control server-side opening states.
           </p>
         </div>
         <button
-          onClick={() => {
-            setCreateError('');
-            setShowCreateModal(true);
-          }}
+          onClick={handleOpenCreateModal}
           style={{
             backgroundColor: '#0B2E6F',
             color: '#FFFFFF',
@@ -562,7 +726,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', width: '120px' }}>CODE</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569' }}>ASSESSMENT TITLE</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>STATUS</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569' }}>DURATION & MARKS</th>
+                <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569' }}>DURATION & ALLOCATIONS</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>COLLEGES</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>ATTEMPTS</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'right' }}>LIFECYCLE CONTROLS</th>
@@ -596,26 +760,15 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                   </td>
                   <td style={{ padding: '14px 16px', textAlign: 'center' }}>
                     {getStatusBadge(a.status, a.is_open)}
-                    <div style={{ marginTop: '4px' }}>
-                      <span
-                        style={{
-                          display: 'inline-block',
-                          fontSize: '10px',
-                          fontWeight: 700,
-                          padding: '2px 6px',
-                          borderRadius: '4px',
-                          backgroundColor: a.is_results_released ? '#DCFCE7' : '#FEF3C7',
-                          color: a.is_results_released ? '#15803D' : '#92400E',
-                        }}
-                      >
-                        {a.is_results_released ? 'Results Released' : 'Results Withheld'}
-                      </span>
-                    </div>
                   </td>
                   <td style={{ padding: '14px 16px', color: '#475569' }}>
                     <div><strong>{a.duration_minutes}</strong> mins • <strong>{a.total_marks}</strong> marks</div>
-                    <div style={{ fontSize: '12px', color: '#64748B' }}>
-                      {a.aptitude_count} Aptitude + {a.coding_count} Coding
+                    <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                      {a.sections && a.sections.length > 0 ? (
+                        a.sections.map((s) => `${s.question_count} ${s.section_name || s.section_code}`).join(' + ')
+                      ) : (
+                        `${a.aptitude_count} Aptitude + ${a.coding_count} Coding`
+                      )}
                     </div>
                     <div style={{ fontSize: '11px', marginTop: '3px' }}>
                       <span
@@ -727,42 +880,6 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                         </button>
                       )}
 
-                      {a.is_results_released ? (
-                        <button
-                          onClick={() => handleToggleReleaseResults(a, false)}
-                          title="Withhold results so students only see completion pending state"
-                          style={{
-                            backgroundColor: '#FFFBEB',
-                            color: '#92400E',
-                            border: '1px solid #FDE68A',
-                            padding: '6px 10px',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 700,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Withhold Results
-                        </button>
-                      ) : (
-                        <button
-                          onClick={() => handleToggleReleaseResults(a, true)}
-                          title="Release results so students can view scorecards and breakdown"
-                          style={{
-                            backgroundColor: '#F3E8FF',
-                            color: '#6B21A8',
-                            border: '1px solid #D8B4FE',
-                            padding: '6px 10px',
-                            borderRadius: '6px',
-                            fontSize: '12px',
-                            fontWeight: 700,
-                            cursor: 'pointer',
-                          }}
-                        >
-                          Release Results
-                        </button>
-                      )}
-
                       <button
                         onClick={() => {
                           if (onNavigateToQuestions) {
@@ -786,7 +903,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
 
                       <button
                         onClick={() => handleOpenEdit(a)}
-                        title="Edit assessment parameters, duration, questions, and policies"
+                        title="Edit assessment parameters, duration, sections, and policies"
                         style={{
                           backgroundColor: '#FEF3C7',
                           color: '#92400E',
@@ -861,7 +978,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
               backgroundColor: '#FFFFFF',
               borderRadius: '12px',
               padding: '28px',
-              width: '680px',
+              width: '740px',
               maxWidth: '92vw',
               maxHeight: '92vh',
               overflowY: 'auto',
@@ -874,7 +991,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                   Create New Assessment Round
                 </h2>
                 <span style={{ fontSize: '13px', color: '#64748B' }}>
-                  Self-contained assessment with independent questions, thresholds, and institutional enrollment.
+                  Self-contained assessment with independent timing, dynamic section allocations, and institutional enrollment.
                 </span>
               </div>
               <button
@@ -934,10 +1051,10 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                 />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '14px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '16px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
-                    Duration (Minutes)
+                    Duration (Minutes) *
                   </label>
                   <input
                     type="number"
@@ -947,33 +1064,6 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                     style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
                   />
                 </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
-                    Aptitude Questions
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={createForm.aptitude_count}
-                    onChange={(e) => setCreateForm({ ...createForm, aptitude_count: Number(e.target.value) })}
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
-                  />
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
-                    Coding Questions
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    value={createForm.coding_count}
-                    onChange={(e) => setCreateForm({ ...createForm, coding_count: Number(e.target.value) })}
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
-                  />
-                </div>
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '16px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
                     Permitted Tab Switch Warnings
@@ -987,19 +1077,207 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                   />
                   <span style={{ fontSize: '11px', color: '#64748B' }}>Default: 2 warnings (3rd switch auto-submits)</span>
                 </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
-                    Close Policy
-                  </label>
-                  <select
-                    value={createForm.close_policy}
-                    onChange={(e) => setCreateForm({ ...createForm, close_policy: e.target.value as any })}
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+              </div>
+
+              {/* ─── DYNAMIC SECTION ALLOCATION CARD ─── */}
+              <div
+                style={{
+                  backgroundColor: '#F8FAFC',
+                  borderRadius: '10px',
+                  border: '1px solid #CBD5E1',
+                  padding: '16px',
+                  marginBottom: '16px',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <div>
+                    <h3 style={{ fontSize: '14px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
+                      Assessment Sections & Question Allocation
+                    </h3>
+                    <p style={{ fontSize: '12px', color: '#64748B', margin: '2px 0 0 0' }}>
+                      Configure sections, question counts, and marks per question.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInlineSectionTarget('create');
+                      setInlineSectionError('');
+                      setShowInlineSectionModal(true);
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      backgroundColor: '#EEF2FF',
+                      color: '#3730A3',
+                      border: '1px solid #C7D2FE',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
                   >
-                    <option value="ALLOW_FINISH">Allow in-progress attempts to finish</option>
-                    <option value="STRICT_CUTOFF">Strict cutoff (terminate active attempts immediately)</option>
+                    + Define New Section
+                  </button>
+                </div>
+
+                {/* Section selection list */}
+                {createSections.length === 0 ? (
+                  <div style={{ padding: '16px', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
+                    No sections added yet. Select a section from the dropdown below to allocate questions.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                    {createSections.map((sec, idx) => (
+                      <div
+                        key={sec.section_id}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '2fr 1fr 1fr 1fr 36px',
+                          gap: '10px',
+                          alignItems: 'center',
+                          backgroundColor: '#FFFFFF',
+                          padding: '10px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid #E2E8F0',
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: '13px', color: '#0F172A' }}>{sec.name}</div>
+                          <span style={{ fontSize: '11px', color: '#3730A3', fontWeight: 600 }}>{sec.code}</span>
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '11px', color: '#64748B', fontWeight: 600 }}>Questions</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={sec.question_count}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                              setCreateSections((prev) =>
+                                prev.map((s, i) => (i === idx ? { ...s, question_count: val } : s))
+                              );
+                            }}
+                            style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #CBD5E1', fontSize: '13px' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '11px', color: '#64748B', fontWeight: 600 }}>Marks/Q</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={sec.marks_per_question}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                              setCreateSections((prev) =>
+                                prev.map((s, i) => (i === idx ? { ...s, marks_per_question: val } : s))
+                              );
+                            }}
+                            style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #CBD5E1', fontSize: '13px' }}
+                          />
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <span style={{ fontSize: '11px', color: '#64748B', display: 'block' }}>Subtotal</span>
+                          <strong style={{ fontSize: '13px', color: '#0B2E6F' }}>
+                            {sec.question_count * sec.marks_per_question} marks
+                          </strong>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setCreateSections((prev) => prev.filter((_, i) => i !== idx))}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#EF4444',
+                            fontSize: '16px',
+                            cursor: 'pointer',
+                            padding: '4px',
+                          }}
+                          title="Remove section from this assessment"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Add another section dropdown */}
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <select
+                    onChange={(e) => {
+                      const selectedId = parseInt(e.target.value, 10);
+                      if (!selectedId) return;
+                      const match = availableSections.find((s) => s.id === selectedId);
+                      if (match && !createSections.some((s) => s.section_id === match.id)) {
+                        setCreateSections((prev) => [
+                          ...prev,
+                          {
+                            section_id: match.id,
+                            name: match.name,
+                            code: match.code,
+                            question_count: 10,
+                            marks_per_question: 1,
+                          },
+                        ]);
+                      }
+                      e.target.value = '';
+                    }}
+                    defaultValue=""
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid #CBD5E1',
+                      fontSize: '13px',
+                      backgroundColor: '#FFFFFF',
+                      flex: 1,
+                    }}
+                  >
+                    <option value="">+ Add Section from Library...</option>
+                    {availableSections
+                      .filter((s) => !createSections.some((cs) => cs.section_id === s.id))
+                      .map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.code}) — {s.question_count ?? 0} Qs in bank
+                        </option>
+                      ))}
                   </select>
                 </div>
+
+                {/* Summary calculation pill */}
+                <div
+                  style={{
+                    marginTop: '12px',
+                    padding: '8px 12px',
+                    backgroundColor: '#EFF6FF',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    color: '#1E40AF',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span>
+                    Total Questions: <strong>{createSections.reduce((acc, s) => acc + Number(s.question_count || 0), 0)}</strong>
+                  </span>
+                  <span>
+                    Computed Total Marks: <strong>{createSections.reduce((acc, s) => acc + Number(s.question_count || 0) * Number(s.marks_per_question || 1), 0)}</strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Close Policy */}
+              <div style={{ marginBottom: '16px' }}>
+                <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Close Policy
+                </label>
+                <select
+                  value={createForm.close_policy}
+                  onChange={(e) => setCreateForm({ ...createForm, close_policy: e.target.value as any })}
+                  style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
+                >
+                  <option value="ALLOW_FINISH">Allow in-progress attempts to finish</option>
+                  <option value="STRICT_CUTOFF">Strict cutoff (terminate active attempts immediately)</option>
+                </select>
               </div>
 
               {/* Eligible Colleges Selection */}
@@ -1072,7 +1350,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
               backgroundColor: '#FFFFFF',
               borderRadius: '12px',
               padding: '28px',
-              width: '680px',
+              width: '740px',
               maxWidth: '92vw',
               maxHeight: '92vh',
               overflowY: 'auto',
@@ -1085,7 +1363,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                   Edit Assessment: {editForm.title}
                 </h2>
                 <span style={{ fontSize: '13px', color: '#64748B' }}>
-                  Configure independent timing, marks, section question counts, and proctoring constraints.
+                  Configure independent timing, marks, dynamic section question counts, and proctoring constraints.
                 </span>
               </div>
               <button
@@ -1142,7 +1420,7 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                 />
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '14px', marginBottom: '14px' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '16px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
                     Duration (Minutes) *
@@ -1159,42 +1437,6 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                 </div>
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
-                    Aptitude Count *
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    required
-                    value={editForm.aptitude_count}
-                    onChange={(e) => setEditForm({ ...editForm, aptitude_count: Number(e.target.value) })}
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
-                  />
-                  <span style={{ fontSize: '11px', color: '#64748B' }}>Aptitude questions picked</span>
-                </div>
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
-                    Coding Count *
-                  </label>
-                  <input
-                    type="number"
-                    min={0}
-                    required
-                    value={editForm.coding_count}
-                    onChange={(e) => setEditForm({ ...editForm, coding_count: Number(e.target.value) })}
-                    style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
-                  />
-                  <span style={{ fontSize: '11px', color: '#64748B' }}>Coding questions picked</span>
-                </div>
-              </div>
-
-              <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '12px 14px', marginBottom: '14px', fontSize: '13px', color: '#475569' }}>
-                <span style={{ fontWeight: 700, color: '#0B2E6F' }}>Computed Total Marks:</span>{' '}
-                <strong>{Number(editForm.aptitude_count || 0) + Number(editForm.coding_count || 0)}</strong> marks (1 mark per question across sections)
-              </div>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
-                <div>
-                  <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
                     Permitted Tab Switch Warnings
                   </label>
                   <input
@@ -1205,6 +1447,192 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                     style={{ width: '100%', padding: '8px 12px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '14px', boxSizing: 'border-box' }}
                   />
                 </div>
+              </div>
+
+              {/* ─── DYNAMIC SECTION ALLOCATION CARD (EDIT) ─── */}
+              <div
+                style={{
+                  backgroundColor: '#F8FAFC',
+                  borderRadius: '10px',
+                  border: '1px solid #CBD5E1',
+                  padding: '16px',
+                  marginBottom: '16px',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <div>
+                    <h3 style={{ fontSize: '14px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
+                      Assessment Sections & Question Allocation
+                    </h3>
+                    <p style={{ fontSize: '12px', color: '#64748B', margin: '2px 0 0 0' }}>
+                      Configure sections and question allocations for this assessment round.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInlineSectionTarget('edit');
+                      setInlineSectionError('');
+                      setShowInlineSectionModal(true);
+                    }}
+                    style={{
+                      padding: '4px 10px',
+                      backgroundColor: '#EEF2FF',
+                      color: '#3730A3',
+                      border: '1px solid #C7D2FE',
+                      borderRadius: '6px',
+                      fontSize: '12px',
+                      fontWeight: 700,
+                      cursor: 'pointer',
+                    }}
+                  >
+                    + Define New Section
+                  </button>
+                </div>
+
+                {editSections.length === 0 ? (
+                  <div style={{ padding: '16px', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
+                    No sections configured yet. Use the dropdown below to allocate questions.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '12px' }}>
+                    {editSections.map((sec, idx) => (
+                      <div
+                        key={sec.section_id}
+                        style={{
+                          display: 'grid',
+                          gridTemplateColumns: '2fr 1fr 1fr 1fr 36px',
+                          gap: '10px',
+                          alignItems: 'center',
+                          backgroundColor: '#FFFFFF',
+                          padding: '10px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid #E2E8F0',
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontWeight: 700, fontSize: '13px', color: '#0F172A' }}>{sec.name}</div>
+                          <span style={{ fontSize: '11px', color: '#3730A3', fontWeight: 600 }}>{sec.code}</span>
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '11px', color: '#64748B', fontWeight: 600 }}>Questions</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={sec.question_count}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                              setEditSections((prev) =>
+                                prev.map((s, i) => (i === idx ? { ...s, question_count: val } : s))
+                              );
+                            }}
+                            style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #CBD5E1', fontSize: '13px' }}
+                          />
+                        </div>
+                        <div>
+                          <label style={{ display: 'block', fontSize: '11px', color: '#64748B', fontWeight: 600 }}>Marks/Q</label>
+                          <input
+                            type="number"
+                            min={1}
+                            value={sec.marks_per_question}
+                            onChange={(e) => {
+                              const val = Math.max(1, parseInt(e.target.value, 10) || 1);
+                              setEditSections((prev) =>
+                                prev.map((s, i) => (i === idx ? { ...s, marks_per_question: val } : s))
+                              );
+                            }}
+                            style={{ width: '100%', padding: '6px 8px', borderRadius: '4px', border: '1px solid #CBD5E1', fontSize: '13px' }}
+                          />
+                        </div>
+                        <div style={{ textAlign: 'right' }}>
+                          <span style={{ fontSize: '11px', color: '#64748B', display: 'block' }}>Subtotal</span>
+                          <strong style={{ fontSize: '13px', color: '#0B2E6F' }}>
+                            {sec.question_count * sec.marks_per_question} marks
+                          </strong>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setEditSections((prev) => prev.filter((_, i) => i !== idx))}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#EF4444',
+                            fontSize: '16px',
+                            cursor: 'pointer',
+                            padding: '4px',
+                          }}
+                          title="Remove section association"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <select
+                    onChange={(e) => {
+                      const selectedId = parseInt(e.target.value, 10);
+                      if (!selectedId) return;
+                      const match = availableSections.find((s) => s.id === selectedId);
+                      if (match && !editSections.some((s) => s.section_id === match.id)) {
+                        setEditSections((prev) => [
+                          ...prev,
+                          {
+                            section_id: match.id,
+                            name: match.name,
+                            code: match.code,
+                            question_count: 10,
+                            marks_per_question: 1,
+                          },
+                        ]);
+                      }
+                      e.target.value = '';
+                    }}
+                    defaultValue=""
+                    style={{
+                      padding: '8px 12px',
+                      borderRadius: '6px',
+                      border: '1px solid #CBD5E1',
+                      fontSize: '13px',
+                      backgroundColor: '#FFFFFF',
+                      flex: 1,
+                    }}
+                  >
+                    <option value="">+ Add Section from Library...</option>
+                    {availableSections
+                      .filter((s) => !editSections.some((es) => es.section_id === s.id))
+                      .map((s) => (
+                        <option key={s.id} value={s.id}>
+                          {s.name} ({s.code}) — {s.question_count ?? 0} Qs in bank
+                        </option>
+                      ))}
+                  </select>
+                </div>
+
+                <div
+                  style={{
+                    marginTop: '12px',
+                    padding: '8px 12px',
+                    backgroundColor: '#EFF6FF',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    color: '#1E40AF',
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span>
+                    Total Questions: <strong>{editSections.reduce((acc, s) => acc + Number(s.question_count || 0), 0)}</strong>
+                  </span>
+                  <span>
+                    Computed Total Marks: <strong>{editSections.reduce((acc, s) => acc + Number(s.question_count || 0) * Number(s.marks_per_question || 1), 0)}</strong>
+                  </span>
+                </div>
+              </div>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
                 <div>
                   <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
                     Close Cutoff Policy
@@ -1234,6 +1662,111 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                   style={{ backgroundColor: '#0B2E6F', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '10px 20px', fontWeight: 700, cursor: 'pointer' }}
                 >
                   {editSubmitting ? 'Saving Changes...' : 'Save Assessment Settings'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ─── INLINE CREATE SECTION MODAL ──────────────────────────────── */}
+      {showInlineSectionModal && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            backgroundColor: 'rgba(0,0,0,0.6)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 110,
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              padding: '24px',
+              width: '440px',
+              maxWidth: '90vw',
+              boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.15)',
+            }}
+          >
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px' }}>
+              <h3 style={{ fontSize: '16px', fontWeight: 800, color: '#0B2E6F', margin: 0 }}>
+                Define New Reusable Section
+              </h3>
+              <button
+                type="button"
+                onClick={() => setShowInlineSectionModal(false)}
+                style={{ background: 'none', border: 'none', fontSize: '18px', cursor: 'pointer', color: '#94A3B8' }}
+              >
+                ✕
+              </button>
+            </div>
+
+            {inlineSectionError && (
+              <div style={{ padding: '8px 12px', backgroundColor: '#FEF2F2', border: '1px solid #FCA5A5', color: '#B91C1C', borderRadius: '6px', fontSize: '12px', marginBottom: '12px' }}>
+                {inlineSectionError}
+              </div>
+            )}
+
+            <form onSubmit={handleInlineSectionSubmit}>
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Section Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Verbal Ability, System Architecture"
+                  value={inlineSectionForm.name}
+                  onChange={(e) => setInlineSectionForm({ ...inlineSectionForm, name: e.target.value })}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '13px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '12px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Unique Section Code * (Uppercase)
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. VERBAL, ARCHITECTURE"
+                  value={inlineSectionForm.code}
+                  onChange={(e) => setInlineSectionForm({ ...inlineSectionForm, code: e.target.value.toUpperCase() })}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '13px', boxSizing: 'border-box', textTransform: 'uppercase' }}
+                />
+              </div>
+
+              <div style={{ marginBottom: '18px' }}>
+                <label style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}>
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="Topics covered..."
+                  value={inlineSectionForm.description}
+                  onChange={(e) => setInlineSectionForm({ ...inlineSectionForm, description: e.target.value })}
+                  style={{ width: '100%', padding: '8px 10px', borderRadius: '6px', border: '1px solid #CBD5E1', fontSize: '13px', boxSizing: 'border-box' }}
+                />
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+                <button
+                  type="button"
+                  onClick={() => setShowInlineSectionModal(false)}
+                  style={{ backgroundColor: '#F1F5F9', color: '#475569', border: 'none', borderRadius: '6px', padding: '8px 12px', fontSize: '12px', fontWeight: 600, cursor: 'pointer' }}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={inlineSectionSaving}
+                  style={{ backgroundColor: '#0B2E6F', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '8px 16px', fontSize: '12px', fontWeight: 700, cursor: 'pointer' }}
+                >
+                  {inlineSectionSaving ? 'Saving...' : 'Save & Allocate'}
                 </button>
               </div>
             </form>
@@ -1356,7 +1889,10 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                   {getStatusBadge(selectedAssessment.status, selectedAssessment.is_open)}
                 </div>
                 <div style={{ fontSize: '13px', color: '#64748B', marginTop: '4px' }}>
-                  {selectedAssessment.duration_minutes} Minutes • {selectedAssessment.total_marks} Marks ({selectedAssessment.aptitude_count} Aptitude + {selectedAssessment.coding_count} Coding)
+                  {selectedAssessment.duration_minutes} Minutes • {selectedAssessment.total_marks} Marks
+                  {selectedAssessment.sections && selectedAssessment.sections.length > 0 && (
+                    <span> ({selectedAssessment.sections.map((s) => `${s.question_count} ${s.section_name || s.section_code}`).join(' + ')})</span>
+                  )}
                 </div>
               </div>
               <button
@@ -1463,13 +1999,32 @@ export function AdminAssessmentsView({ onNavigateToQuestions }: AdminAssessments
                       </div>
                       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px' }}>
                         <div>Duration: <strong>{assessmentDetail.duration_minutes} Minutes</strong></div>
-                        <div>Total Marks: <strong>{assessmentDetail.total_marks} Marks ({assessmentDetail.aptitude_count} Aptitude + {assessmentDetail.coding_count} Coding)</strong></div>
+                        <div>Total Marks: <strong>{assessmentDetail.total_marks} Marks</strong></div>
                         <div>Max Tab Warnings: <strong>{assessmentDetail.max_tab_switches_warning}</strong> (Auto-submit: {assessmentDetail.auto_submit_on_tab_limit ? 'Yes' : 'No'})</div>
                         <div>Max Attempts per Student: <strong>{assessmentDetail.max_attempts}</strong></div>
                         <div>Close Policy: <strong>{assessmentDetail.close_policy}</strong></div>
                         <div>Opened: <strong>{assessmentDetail.opened_at ? new Date(assessmentDetail.opened_at).toLocaleString() : 'Not opened yet'}</strong></div>
                       </div>
                     </div>
+
+                    {/* Section Breakdown Card */}
+                    {assessmentDetail.sections && assessmentDetail.sections.length > 0 && (
+                      <div style={{ backgroundColor: '#F8FAFC', padding: '14px', borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '13px' }}>
+                        <div style={{ fontWeight: 700, color: '#334155', marginBottom: '8px' }}>Configured Sections</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                          {assessmentDetail.sections.map((s) => (
+                            <div key={s.id} style={{ display: 'flex', justifyContent: 'space-between', background: '#FFFFFF', padding: '6px 12px', borderRadius: '6px', border: '1px solid #E2E8F0' }}>
+                              <span style={{ fontWeight: 600, color: '#0B2E6F' }}>
+                                [{s.section_code}] {s.section_name}
+                              </span>
+                              <span style={{ color: '#475569' }}>
+                                {s.question_count} Questions ({s.marks_per_question} mark/Q = {s.question_count * s.marks_per_question} marks)
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 

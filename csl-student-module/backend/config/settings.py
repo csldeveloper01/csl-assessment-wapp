@@ -175,15 +175,29 @@ STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
 
 # ─── CORS (configurable for production) ───────────────────────────────────────
+from corsheaders.defaults import default_headers
+
+_default_cors_origins = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'https://csl-assessment-wapp.vercel.app',
+]
 _cors_env = os.getenv('DJANGO_CORS_ALLOWED_ORIGINS')
 if _cors_env:
-    CORS_ALLOWED_ORIGINS = [o.strip() for o in _cors_env.split(',') if o.strip()]
+    CORS_ALLOWED_ORIGINS = list({
+        o.strip().rstrip('/')
+        for o in _cors_env.split(',')
+        if o.strip()
+    } | set(_default_cors_origins))
 else:
-    CORS_ALLOWED_ORIGINS = [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-    ]
+    CORS_ALLOWED_ORIGINS = _default_cors_origins
+
 CORS_ALLOW_CREDENTIALS = True  # required for session cookies
+
+# Explicitly extend default allowed headers with custom assessment token header
+CORS_ALLOW_HEADERS = list(default_headers) + [
+    'x-assessment-token',
+]
 
 
 # ─── Session & CSRF Cookies (HTTPS in production) ─────────────────────────────
@@ -193,14 +207,20 @@ SESSION_COOKIE_SAMESITE = 'None' if _is_secure else 'Lax'
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = _is_secure
 
+_default_csrf_origins = [
+    'http://localhost:5173',
+    'http://127.0.0.1:5173',
+    'https://csl-assessment-wapp.vercel.app',
+]
 _csrf_env = os.getenv('DJANGO_CSRF_TRUSTED_ORIGINS')
 if _csrf_env:
-    CSRF_TRUSTED_ORIGINS = [o.strip() for o in _csrf_env.split(',') if o.strip()]
+    CSRF_TRUSTED_ORIGINS = list({
+        o.strip().rstrip('/')
+        for o in _csrf_env.split(',')
+        if o.strip()
+    } | set(_default_csrf_origins))
 else:
-    CSRF_TRUSTED_ORIGINS = [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-    ]
+    CSRF_TRUSTED_ORIGINS = _default_csrf_origins
 CSRF_COOKIE_SAMESITE = 'None' if _is_secure else 'Lax'
 CSRF_COOKIE_HTTPONLY = False    # frontend needs to read CSRF token
 CSRF_COOKIE_SECURE = _is_secure

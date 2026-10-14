@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { type AdminQuestion, type AdminAssessment } from '../../api/admin';
+import { type AdminQuestion, type AdminAssessment, type AdminSection, getAdminSections } from '../../api/admin';
 
 interface AdminQuestionEditorModalProps {
   question: AdminQuestion | null; // null if creating, populated if editing
@@ -9,6 +9,7 @@ interface AdminQuestionEditorModalProps {
   saving: boolean;
   assessments?: AdminAssessment[];
   defaultAssessmentId?: string;
+  sections?: AdminSection[];
 }
 
 export function AdminQuestionEditorModal({
@@ -19,13 +20,23 @@ export function AdminQuestionEditorModal({
   saving,
   assessments = [],
   defaultAssessmentId = '',
+  sections = [],
 }: AdminQuestionEditorModalProps) {
   const isEditMode = Boolean(question && question.id);
 
   // Form fields
   const [assessmentId, setAssessmentId] = useState<string>('');
   const [prompt, setPrompt] = useState('');
-  const [sectionType, setSectionType] = useState<'APTITUDE' | 'CODING'>('APTITUDE');
+  const [sectionType, setSectionType] = useState<string>('APTITUDE');
+  const [loadedSections, setLoadedSections] = useState<AdminSection[]>(sections);
+
+  useEffect(() => {
+    if (sections && sections.length > 0) {
+      setLoadedSections(sections);
+    } else if (isOpen) {
+      getAdminSections().then(setLoadedSections).catch(() => {});
+    }
+  }, [sections, isOpen]);
   const [category, setCategory] = useState('');
   const [difficulty, setDifficulty] = useState<'EASY' | 'MEDIUM' | 'HARD'>('MEDIUM');
   const [optionA, setOptionA] = useState('');
@@ -638,7 +649,7 @@ export function AdminQuestionEditorModal({
                     </label>
                     <select
                       value={sectionType}
-                      onChange={(e) => setSectionType(e.target.value as 'APTITUDE' | 'CODING')}
+                      onChange={(e) => setSectionType(e.target.value)}
                       style={{
                         width: '100%',
                         padding: '9px 12px',
@@ -652,8 +663,26 @@ export function AdminQuestionEditorModal({
                         outlineColor: '#1455B8',
                       }}
                     >
-                      <option value="APTITUDE">Aptitude</option>
-                      <option value="CODING">Coding Fundamentals</option>
+                      {loadedSections.length > 0 ? (
+                        <>
+                          {loadedSections.map((sec) => (
+                            <option key={sec.id} value={sec.code}>
+                              {sec.name} ({sec.code})
+                            </option>
+                          ))}
+                          {!loadedSections.some((s) => s.code.toUpperCase() === sectionType.toUpperCase()) && (
+                            <option value={sectionType}>{sectionType}</option>
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          <option value="APTITUDE">Aptitude</option>
+                          <option value="CODING">Coding Fundamentals</option>
+                          {sectionType !== 'APTITUDE' && sectionType !== 'CODING' && (
+                            <option value={sectionType}>{sectionType}</option>
+                          )}
+                        </>
+                      )}
                     </select>
                   </div>
 

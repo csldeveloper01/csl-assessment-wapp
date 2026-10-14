@@ -7,8 +7,10 @@ import {
   bulkUpdateAdminQuestions,
   importAdminQuestionsCSV,
   getAdminAssessments,
+  getAdminSections,
   type AdminQuestion,
   type AdminAssessment,
+  type AdminSection,
 } from '../../api/admin';
 import { AdminQuestionEditorModal } from './AdminQuestionEditorModal';
 
@@ -19,6 +21,7 @@ interface AdminQuestionsViewProps {
 export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewProps) {
   const [questions, setQuestions] = useState<AdminQuestion[]>([]);
   const [assessments, setAssessments] = useState<AdminAssessment[]>([]);
+  const [sections, setSections] = useState<AdminSection[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Hierarchy Navigation: Question Bank -> Assessment Selection -> Questions
@@ -47,7 +50,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
     is_active: false,
   });
   const [bulkValues, setBulkValues] = useState<{
-    section_type: 'APTITUDE' | 'CODING';
+    section_type: string;
     difficulty: 'EASY' | 'MEDIUM' | 'HARD';
     is_active: boolean;
   }>({
@@ -106,6 +109,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
         }
       }
     }).catch(() => {});
+    getAdminSections().then(setSections).catch(() => {});
   }, [initialAssessmentId]);
 
   useEffect(() => {
@@ -226,7 +230,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
     }
 
     const payload: {
-      section_type?: 'APTITUDE' | 'CODING';
+      section_type?: string;
       difficulty?: 'EASY' | 'MEDIUM' | 'HARD';
       is_active?: boolean;
     } = {};
@@ -1164,8 +1168,13 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
           }}
         >
           <option value="">All Sections</option>
-          <option value="APTITUDE">Aptitude</option>
-          <option value="CODING">Coding Fundamentals</option>
+          {sections.map((sec) => (
+            <option key={sec.id} value={sec.code}>
+              {sec.name} ({sec.code})
+            </option>
+          ))}
+          {!sections.some((s) => s.code === 'APTITUDE') && <option value="APTITUDE">Aptitude</option>}
+          {!sections.some((s) => s.code === 'CODING') && <option value="CODING">Coding Fundamentals</option>}
         </select>
 
         <select
@@ -1732,6 +1741,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
         isOpen={showEditorModal}
         question={editingQuestion}
         assessments={assessments}
+        sections={sections}
         defaultAssessmentId={selectedAssessment?.id || assessmentFilter || ''}
         onClose={() => {
           setShowEditorModal(false);
@@ -1808,7 +1818,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                 <select
                   disabled={!bulkFields.section_type}
                   value={bulkValues.section_type}
-                  onChange={(e) => setBulkValues({ ...bulkValues, section_type: e.target.value as any })}
+                  onChange={(e) => setBulkValues({ ...bulkValues, section_type: e.target.value })}
                   style={{
                     width: '100%',
                     padding: '8px 10px',
@@ -1818,8 +1828,13 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                     backgroundColor: bulkFields.section_type ? '#FFFFFF' : '#F1F5F9',
                   }}
                 >
-                  <option value="APTITUDE">Aptitude</option>
-                  <option value="CODING">Coding Fundamentals</option>
+                  {sections.map((sec) => (
+                    <option key={sec.id} value={sec.code}>
+                      {sec.name} ({sec.code})
+                    </option>
+                  ))}
+                  {!sections.some((s) => s.code === 'APTITUDE') && <option value="APTITUDE">Aptitude</option>}
+                  {!sections.some((s) => s.code === 'CODING') && <option value="CODING">Coding Fundamentals</option>}
                 </select>
               </div>
 

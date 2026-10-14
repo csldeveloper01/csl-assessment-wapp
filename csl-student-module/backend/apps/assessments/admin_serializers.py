@@ -10,7 +10,84 @@ from .models import (
     IntegrityEvent,
     QuestionBank,
     AssessmentAuditLog,
+    AssessmentSection,
+    AssessmentSectionAllocation,
 )
+
+
+class AdminAssessmentSectionSerializer(serializers.ModelSerializer):
+    questions_count = serializers.SerializerMethodField()
+    assessments_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AssessmentSection
+        fields = [
+            "id",
+            "name",
+            "code",
+            "description",
+            "is_active",
+            "order",
+            "questions_count",
+            "assessments_count",
+            "created_at",
+            "updated_at",
+        ]
+
+    def get_questions_count(self, obj):
+        return QuestionBank.objects.filter(section_type=obj.code).count()
+
+    def get_assessments_count(self, obj):
+        return obj.assessment_allocations.count()
+
+    def validate_name(self, value):
+        val = value.strip()
+        if len(val) < 2:
+            raise serializers.ValidationError("Section name must be at least 2 characters.")
+        existing = AssessmentSection.objects.filter(name__iexact=val)
+        if self.instance:
+            existing = existing.exclude(id=self.instance.id)
+        if existing.exists():
+            raise serializers.ValidationError(f"A section named '{val}' already exists.")
+        return val
+
+    def validate_code(self, value):
+        val = value.strip().upper()
+        if len(val) < 2:
+            raise serializers.ValidationError("Section code must be at least 2 characters.")
+        existing = AssessmentSection.objects.filter(code__iexact=val)
+        if self.instance:
+            existing = existing.exclude(id=self.instance.id)
+        if existing.exists():
+            raise serializers.ValidationError(f"Section code '{val}' is already taken.")
+        return val
+
+
+class AdminAssessmentSectionAllocationSerializer(serializers.ModelSerializer):
+    section_id = serializers.IntegerField(source="section.id", read_only=True)
+    section_name = serializers.CharField(source="section.name", read_only=True)
+    section_code = serializers.CharField(source="section.code", read_only=True)
+    available_questions_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = AssessmentSectionAllocation
+        fields = [
+            "id",
+            "section_id",
+            "section_name",
+            "section_code",
+            "question_count",
+            "marks_per_question",
+            "order",
+            "available_questions_count",
+        ]
+
+    def get_available_questions_count(self, obj):
+        assessment = obj.assessment
+        if assessment and assessment.questions.exists():
+            return assessment.questions.filter(section_type=obj.section.code, is_active=True).count()
+        return QuestionBank.objects.filter(section_type=obj.section.code, is_active=True).count()
+
 
 
 class AdminCollegeListSerializer(serializers.ModelSerializer):
@@ -108,6 +185,7 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
     pool_aptitude_count = serializers.SerializerMethodField()
     pool_coding_count = serializers.SerializerMethodField()
     pool_sufficient = serializers.SerializerMethodField()
+    sections = serializers.SerializerMethodField()
 
     class Meta:
         model = Assessment
@@ -144,7 +222,12 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
             "pool_aptitude_count",
             "pool_coding_count",
             "pool_sufficient",
+            "sections",
         ]
+
+    def get_sections(self, obj):
+        allocs = obj.section_allocations.select_related("section").order_by("order", "id")
+        return AdminAssessmentSectionAllocationSerializer(allocs, many=True).data
 
     def get_is_open(self, obj):
         return obj.is_currently_open()
@@ -159,6 +242,16 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
         return obj.questions.filter(section_type=QuestionBank.SectionType.CODING, is_active=True).count()
 
     def get_pool_sufficient(self, obj):
+        allocs = obj.section_allocations.select_related("section").all()
+        if allocs.exists():
+            for alloc in allocs:
+                if obj.questions.exists():
+                    cnt = obj.questions.filter(section_type=alloc.section.code, is_active=True).count()
+                else:
+                    cnt = QuestionBank.objects.filter(section_type=alloc.section.code, is_active=True).count()
+                if cnt < alloc.question_count:
+                    return False
+            return True
         apt = self.get_pool_aptitude_count(obj)
         cod = self.get_pool_coding_count(obj)
         return (apt >= obj.aptitude_count) and (cod >= obj.coding_count)
@@ -187,6 +280,11 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True,
     )
+    sections = serializers.ListField(
+        child=serializers.DictField(),
+        required=False,
+        write_only=True,
+    )
 
     class Meta:
         model = Assessment
@@ -207,6 +305,7 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
             "scheduled_end_time",
             "close_policy",
             "eligible_college_ids",
+            "sections",
         ]
 
     def validate_code(self, value):
@@ -228,24 +327,127 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
 
     def validate(self, data):
         duration = data.get("duration_minutes", getattr(self.instance, "duration_minutes", 60))
-        aptitude = data.get("aptitude_count", getattr(self.instance, "aptitude_count", 25))
-        coding = data.get("coding_count", getattr(self.instance, "coding_count", 25))
         total = data.get("total_marks", getattr(self.instance, "total_marks", 50))
         max_attempts = data.get("max_attempts", getattr(self.instance, "max_attempts", 1))
 
         errors = {}
         if duration < 1:
             errors["duration_minutes"] = "Duration must be at least 1 minute."
-        if aptitude < 1 and coding < 1:
-            errors["aptitude_count"] = "Must have at least one question configured."
-        if total != (aptitude + coding):
-            errors["total_marks"] = f"Total marks ({total}) must equal aptitude ({aptitude}) + coding ({coding})."
         if max_attempts < 1:
             errors["max_attempts"] = "Max attempts must be at least 1."
+
+        sections_data = self.initial_data.get("sections")
+        if sections_data is not None:
+            if not isinstance(sections_data, list) or len(sections_data) == 0:
+                errors["sections"] = "At least one section must be configured for the assessment."
+            else:
+                calculated_total = 0
+                for idx, sec in enumerate(sections_data):
+                    sec_id = sec.get("section_id")
+                    q_count = int(sec.get("question_count", 0))
+                    marks_q = int(sec.get("marks_per_question", 1))
+                    if not sec_id:
+                        errors["sections"] = f"Section at index {idx} must specify a valid section_id."
+                        break
+                    if q_count < 1:
+                        errors["sections"] = "Question count for each section must be at least 1."
+                        break
+                    if marks_q < 1:
+                        errors["sections"] = "Marks per question must be at least 1."
+                        break
+                    calculated_total += q_count * marks_q
+                if "sections" not in errors and total != calculated_total:
+                    errors["total_marks"] = f"Total marks ({total}) must equal sum of section marks ({calculated_total})."
+        else:
+            aptitude = data.get("aptitude_count", getattr(self.instance, "aptitude_count", 25))
+            coding = data.get("coding_count", getattr(self.instance, "coding_count", 25))
+            if aptitude < 1 and coding < 1:
+                errors["aptitude_count"] = "Must have at least one question configured."
+            if total != (aptitude + coding):
+                errors["total_marks"] = f"Total marks ({total}) must equal aptitude ({aptitude}) + coding ({coding})."
 
         if errors:
             raise serializers.ValidationError(errors)
         return data
+
+    def create(self, validated_data):
+        college_ids = validated_data.pop("eligible_college_ids", None)
+        sections_data = self.initial_data.get("sections", None)
+        validated_data.pop("sections", None)
+        assessment = super().create(validated_data)
+        if college_ids is not None:
+            colleges = College.objects.filter(id__in=college_ids)
+            assessment.eligible_colleges.set(colleges)
+        if sections_data:
+            self._sync_sections(assessment, sections_data)
+        return assessment
+
+    def update(self, instance, validated_data):
+        college_ids = validated_data.pop("eligible_college_ids", None)
+        sections_data = self.initial_data.get("sections", None)
+        validated_data.pop("sections", None)
+        assessment = super().update(instance, validated_data)
+        if college_ids is not None:
+            colleges = College.objects.filter(id__in=college_ids)
+            assessment.eligible_colleges.set(colleges)
+        if sections_data is not None:
+            self._sync_sections(assessment, sections_data)
+        return assessment
+
+    def _sync_sections(self, assessment, sections_data):
+        from .models import AssessmentSection, AssessmentSectionAllocation
+        existing_allocations = {a.section_id: a for a in assessment.section_allocations.all()}
+        seen_section_ids = set()
+
+        apt_count = 0
+        cod_count = 0
+
+        for idx, sec in enumerate(sections_data):
+            sec_id = sec.get("section_id")
+            if not sec_id:
+                continue
+            section = AssessmentSection.objects.filter(id=sec_id).first()
+            if not section:
+                continue
+            q_count = int(sec.get("question_count", 25))
+            marks_q = int(sec.get("marks_per_question", 1))
+            order_val = int(sec.get("order", idx + 1))
+
+            seen_section_ids.add(section.id)
+
+            if section.id in existing_allocations:
+                alloc = existing_allocations[section.id]
+                alloc.question_count = q_count
+                alloc.marks_per_question = marks_q
+                alloc.order = order_val
+                alloc.save()
+            else:
+                AssessmentSectionAllocation.objects.create(
+                    assessment=assessment,
+                    section=section,
+                    question_count=q_count,
+                    marks_per_question=marks_q,
+                    order=order_val,
+                )
+
+            if section.code == "APTITUDE":
+                apt_count = q_count
+            elif section.code == "CODING":
+                cod_count = q_count
+
+        # Remove associations only (without deleting the reusable section!)
+        assessment.section_allocations.exclude(section_id__in=seen_section_ids).delete()
+
+        # Update legacy aptitude_count and coding_count fields if relevant
+        update_fields = []
+        if apt_count:
+            assessment.aptitude_count = apt_count
+            update_fields.append("aptitude_count")
+        if cod_count:
+            assessment.coding_count = cod_count
+            update_fields.append("coding_count")
+        if update_fields:
+            assessment.save(update_fields=update_fields)
 
 
 class AdminAssessmentDetailSerializer(AdminAssessmentListSerializer):
@@ -397,6 +599,7 @@ class AdminQuestionSerializer(serializers.ModelSerializer):
     assigned_assessments = serializers.SerializerMethodField()
     assessment_id = serializers.SerializerMethodField()
     assessment_title = serializers.SerializerMethodField()
+    section_name = serializers.CharField(source="section.name", read_only=True)
 
     class Meta:
         model = QuestionBank
@@ -404,6 +607,7 @@ class AdminQuestionSerializer(serializers.ModelSerializer):
             "id",
             "prompt",
             "section_type",
+            "section_name",
             "category",
             "difficulty",
             "assessment_type",
@@ -448,6 +652,28 @@ class AdminQuestionSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Correct option must be A, B, C, or D.")
         return val
 
+    def create(self, validated_data):
+        sec_type = validated_data.get("section_type", "")
+        if sec_type and "section" not in validated_data:
+            sec = AssessmentSection.objects.filter(code__iexact=sec_type).first()
+            if not sec:
+                sec = AssessmentSection.objects.filter(name__iexact=sec_type).first()
+            if sec:
+                validated_data["section"] = sec
+                validated_data["section_type"] = sec.code
+        return super().create(validated_data)
+
+    def update(self, instance, validated_data):
+        sec_type = validated_data.get("section_type", instance.section_type)
+        if sec_type:
+            sec = AssessmentSection.objects.filter(code__iexact=sec_type).first()
+            if not sec:
+                sec = AssessmentSection.objects.filter(name__iexact=sec_type).first()
+            if sec:
+                validated_data["section"] = sec
+                validated_data["section_type"] = sec.code
+        return super().update(instance, validated_data)
+
 
 class AdminAssessmentConfigSerializer(serializers.ModelSerializer):
     class Meta:
@@ -456,10 +682,6 @@ class AdminAssessmentConfigSerializer(serializers.ModelSerializer):
             "id",
             "title",
             "description",
-            "duration_minutes",
-            "total_marks",
-            "aptitude_count",
-            "coding_count",
             "max_attempts",
             "max_tab_switches_warning",
             "auto_submit_on_tab_limit",
@@ -469,22 +691,10 @@ class AdminAssessmentConfigSerializer(serializers.ModelSerializer):
         ]
 
     def validate(self, data):
-        duration = data.get("duration_minutes", getattr(self.instance, "duration_minutes", 60))
-        aptitude = data.get("aptitude_count", getattr(self.instance, "aptitude_count", 25))
-        coding = data.get("coding_count", getattr(self.instance, "coding_count", 25))
-        total = data.get("total_marks", getattr(self.instance, "total_marks", 50))
         max_attempts = data.get("max_attempts", getattr(self.instance, "max_attempts", 1))
         max_tab_switches = data.get("max_tab_switches_warning", getattr(self.instance, "max_tab_switches_warning", 2))
 
         errors = {}
-        if duration < 1:
-            errors["duration_minutes"] = "Duration must be at least 1 minute."
-        if aptitude < 1:
-            errors["aptitude_count"] = "Aptitude question count must be at least 1."
-        if coding < 1:
-            errors["coding_count"] = "Coding question count must be at least 1."
-        if total != (aptitude + coding):
-            errors["total_marks"] = f"Total marks ({total}) must equal aptitude ({aptitude}) + coding ({coding})."
         if max_attempts < 1:
             errors["max_attempts"] = "Max attempts must be at least 1."
         if max_tab_switches < 1:

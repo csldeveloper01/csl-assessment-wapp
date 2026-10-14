@@ -25,6 +25,8 @@ from .admin_views import (
     AdminQuestionToggleView,
     AdminQuestionImportCSVView,
     AdminQuestionBulkUpdateView,
+    AdminSectionListCreateView,
+    AdminSectionDetailView,
     AdminConfigView,
     AdminLiveAttemptsView,
     AdminAttemptReviewView,
@@ -71,7 +73,11 @@ urlpatterns = [
     path("questions/bulk-update/", AdminQuestionBulkUpdateView.as_view(), name="admin-questions-bulk-update"),
     path("questions/import-csv/", AdminQuestionImportCSVView.as_view(), name="admin-question-import-csv"),
 
-    # Config (legacy fallback)
+    # Reusable Sections Library
+    path("sections/", AdminSectionListCreateView.as_view(), name="admin-sections-list-create"),
+    path("sections/<int:pk>/", AdminSectionDetailView.as_view(), name="admin-sections-detail"),
+
+    # Platform Configuration
     path("config/", AdminConfigView.as_view(), name="admin-config"),
 
     # Attempts & Results

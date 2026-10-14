@@ -4,6 +4,43 @@ from django.utils import timezone
 from django.core.exceptions import ValidationError
 
 
+class AssessmentSection(models.Model):
+    """
+    Reusable library of assessment sections (e.g. Aptitude, Coding Fundamentals, Reasoning, etc.)
+    available platform-wide and persistently selectable across multiple assessments.
+    """
+    name = models.CharField(max_length=100, unique=True, help_text="Section display name, e.g. Aptitude, Coding Fundamentals")
+    code = models.CharField(max_length=50, unique=True, db_index=True, help_text="Unique uppercase code, e.g. APTITUDE, CODING")
+    description = models.TextField(blank=True, default="", help_text="Description of this section's subject matter")
+    is_active = models.BooleanField(default=True, db_index=True)
+    order = models.PositiveIntegerField(default=1, help_text="Default ordering for display")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "name"]
+        indexes = [
+            models.Index(fields=["code"]),
+            models.Index(fields=["is_active", "order"]),
+        ]
+
+    def clean(self):
+        if self.name:
+            self.name = self.name.strip()
+        if not self.code and self.name:
+            import re
+            self.code = re.sub(r"[^A-Z0-9_]", "_", self.name.upper()).strip("_")[:50]
+        elif self.code:
+            self.code = self.code.strip().upper()
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+
 class QuestionBank(models.Model):
     class SectionType(models.TextChoices):
         APTITUDE = "APTITUDE", "Aptitude"
@@ -15,7 +52,15 @@ class QuestionBank(models.Model):
         HARD = "HARD", "Hard"
 
     prompt = models.TextField(help_text="MCQ question text or problem statement")
-    section_type = models.CharField(max_length=20, choices=SectionType.choices, db_index=True)
+    section = models.ForeignKey(
+        AssessmentSection,
+        null=True,
+        blank=True,
+        on_delete=models.PROTECT,
+        related_name="questions",
+        help_text="Associated reusable section",
+    )
+    section_type = models.CharField(max_length=50, db_index=True, help_text="Section code / identifier")
     category = models.CharField(max_length=100, blank=True, default="", db_index=True, help_text="Optional legacy classification")
     difficulty = models.CharField(max_length=20, choices=Difficulty.choices, default=Difficulty.MEDIUM, db_index=True)
     assessment_type = models.CharField(
@@ -86,11 +131,7 @@ class AssessmentConfig(models.Model):
         errors = {}
         if self.duration_minutes < 1:
             errors["duration_minutes"] = "Duration must be at least 1 minute."
-        if self.aptitude_count < 1:
-            errors["aptitude_count"] = "Aptitude question count must be at least 1."
-        if self.coding_count < 1:
-            errors["coding_count"] = "Coding question count must be at least 1."
-        if self.total_marks != (self.aptitude_count + self.coding_count):
+        if self.aptitude_count and self.coding_count and self.total_marks != (self.aptitude_count + self.coding_count):
             errors["total_marks"] = (
                 f"Total marks ({self.total_marks}) must equal aptitude ({self.aptitude_count}) + coding ({self.coding_count})."
             )
@@ -218,6 +259,15 @@ class Assessment(models.Model):
         help_text="Scoped pool of questions eligible for this assessment",
     )
 
+    # Dynamic section allocations (through model)
+    sections = models.ManyToManyField(
+        AssessmentSection,
+        through="AssessmentSectionAllocation",
+        blank=True,
+        related_name="assessments",
+        help_text="Configured dynamic sections for this assessment",
+    )
+
     # Administrative audit tracking
     created_by = models.ForeignKey(
         "users.User",
@@ -259,12 +309,16 @@ class Assessment(models.Model):
         errors = {}
         if self.duration_minutes < 1:
             errors["duration_minutes"] = "Duration must be at least 1 minute."
-        if self.aptitude_count < 1 and self.coding_count < 1:
-            errors["aptitude_count"] = "At least one question must be configured."
-        if self.total_marks != (self.aptitude_count + self.coding_count):
-            errors["total_marks"] = f"Total marks ({self.total_marks}) must equal aptitude ({self.aptitude_count}) + coding ({self.coding_count})."
         if self.max_attempts < 1:
             errors["max_attempts"] = "Max attempts must be at least 1."
+        if self.total_marks < 1:
+            errors["total_marks"] = "Total marks must be at least 1."
+
+        if self.pk and self.section_allocations.exists():
+            alloc_sum = sum(a.question_count * a.marks_per_question for a in self.section_allocations.all())
+            if self.total_marks != alloc_sum:
+                errors["total_marks"] = f"Total marks ({self.total_marks}) must equal the sum of section allocations ({alloc_sum})."
+
         if errors:
             raise ValidationError(errors)
 
@@ -282,6 +336,62 @@ class Assessment(models.Model):
 
     def __str__(self):
         return f"[{self.code}] {self.title} ({self.status})"
+
+
+class AssessmentSectionAllocation(models.Model):
+    """
+    Assessment-specific configuration for a section: question quota and marks.
+    Enables dynamic, reusable section composition per assessment.
+    """
+    assessment = models.ForeignKey(
+        Assessment,
+        on_delete=models.CASCADE,
+        related_name="section_allocations",
+    )
+    section = models.ForeignKey(
+        AssessmentSection,
+        on_delete=models.PROTECT,
+        related_name="assessment_allocations",
+    )
+    question_count = models.PositiveIntegerField(
+        default=25,
+        help_text="Number of questions to sample from this section",
+    )
+    marks_per_question = models.PositiveIntegerField(
+        default=1,
+        help_text="Marks awarded per question in this section",
+    )
+    order = models.PositiveIntegerField(
+        default=1,
+        help_text="Ordering of this section within the assessment",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["order", "id"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["assessment", "section"],
+                name="uniq_assessment_section_allocation",
+            )
+        ]
+
+    def clean(self):
+        errors = {}
+        if self.question_count < 1:
+            errors["question_count"] = "Question count must be at least 1."
+        if self.marks_per_question < 1:
+            errors["marks_per_question"] = "Marks per question must be at least 1."
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self.clean()
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"{self.assessment.code} - {self.section.name}: {self.question_count} Qs"
 
 
 class Candidate(models.Model):
@@ -415,7 +525,7 @@ class AttemptQuestionSnapshot(models.Model):
     attempt = models.ForeignKey(AssessmentAttempt, on_delete=models.CASCADE, related_name="question_snapshots")
     question = models.ForeignKey(QuestionBank, on_delete=models.PROTECT, related_name="attempt_snapshots")
     question_order = models.PositiveIntegerField(help_text="1 to 50 ordering in attempt")
-    section_type = models.CharField(max_length=20, choices=QuestionBank.SectionType.choices)
+    section_type = models.CharField(max_length=50, db_index=True, help_text="Section identifier")
     
     # Captured prompt and shuffled options mapping for student rendering
     prompt = models.TextField()

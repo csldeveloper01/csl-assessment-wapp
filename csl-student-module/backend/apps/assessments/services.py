@@ -4,7 +4,7 @@ import random
 import re
 from collections import defaultdict
 from datetime import timedelta
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
 from rest_framework.exceptions import ValidationError
 
@@ -80,36 +80,61 @@ def get_or_create_default_assessment():
     return assessment
 
 
-def validate_question_bank_sufficiency(aptitude_count: int = 25, coding_count: int = 25, assessment: Assessment = None):
+def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count: int = None, assessment: Assessment = None):
     """
     Checks that the Question Bank or assessment question pool contains enough active questions for each section.
+    Supports dynamic section allocations with fallback to legacy aptitude and coding counts.
     """
-    if assessment and assessment.questions.exists():
-        active_aptitude = assessment.questions.filter(
-            section_type=QuestionBank.SectionType.APTITUDE, is_active=True
-        ).count()
-        active_coding = assessment.questions.filter(
-            section_type=QuestionBank.SectionType.CODING, is_active=True
-        ).count()
-        scope_name = f"question pool for '{assessment.title}' ({assessment.code})"
-    else:
-        active_aptitude = QuestionBank.objects.filter(
-            section_type=QuestionBank.SectionType.APTITUDE, is_active=True
-        ).count()
-        active_coding = QuestionBank.objects.filter(
-            section_type=QuestionBank.SectionType.CODING, is_active=True
-        ).count()
-        scope_name = "bank"
-
+    scope_name = f"question pool for '{assessment.title}' ({assessment.code})" if (assessment and assessment.questions.exists()) else "bank"
     errors = []
-    if active_aptitude < aptitude_count:
-        errors.append(
-            f"Insufficient aptitude questions in {scope_name}: found {active_aptitude}, requires {aptitude_count}."
-        )
-    if active_coding < coding_count:
-        errors.append(
-            f"Insufficient coding questions in {scope_name}: found {active_coding}, requires {coding_count}."
-        )
+
+    if assessment and assessment.section_allocations.exists():
+        for alloc in assessment.section_allocations.select_related("section").all():
+            sec = alloc.section
+            needed = alloc.question_count
+            if needed <= 0:
+                continue
+            if assessment.questions.exists():
+                available = assessment.questions.filter(
+                    models.Q(section=sec) | models.Q(section_type=sec.code),
+                    is_active=True,
+                ).count()
+            else:
+                available = QuestionBank.objects.filter(
+                    models.Q(section=sec) | models.Q(section_type=sec.code),
+                    is_active=True,
+                ).count()
+            if available < needed:
+                errors.append(
+                    f"Insufficient '{sec.name}' questions in {scope_name}: found {available}, requires {needed}."
+                )
+    else:
+        apt_count = aptitude_count if aptitude_count is not None else (assessment.aptitude_count if assessment else 25)
+        cod_count = coding_count if coding_count is not None else (assessment.coding_count if assessment else 25)
+
+        if assessment and assessment.questions.exists():
+            active_aptitude = assessment.questions.filter(
+                section_type=QuestionBank.SectionType.APTITUDE, is_active=True
+            ).count()
+            active_coding = assessment.questions.filter(
+                section_type=QuestionBank.SectionType.CODING, is_active=True
+            ).count()
+        else:
+            active_aptitude = QuestionBank.objects.filter(
+                section_type=QuestionBank.SectionType.APTITUDE, is_active=True
+            ).count()
+            active_coding = QuestionBank.objects.filter(
+                section_type=QuestionBank.SectionType.CODING, is_active=True
+            ).count()
+
+        if active_aptitude < apt_count:
+            errors.append(
+                f"Insufficient aptitude questions in {scope_name}: found {active_aptitude}, requires {apt_count}."
+            )
+        if active_coding < cod_count:
+            errors.append(
+                f"Insufficient coding questions in {scope_name}: found {active_coding}, requires {cod_count}."
+            )
 
     if errors:
         raise ValidationError({"bank_error": " ".join(errors)})
@@ -126,11 +151,17 @@ def select_balanced_questions(section_type: str, required_count: int, assessment
     """
     if assessment and assessment.questions.exists():
         qs = list(
-            assessment.questions.filter(section_type=section_type, is_active=True)
+            assessment.questions.filter(
+                models.Q(section_type=section_type) | models.Q(section__code=section_type),
+                is_active=True,
+            )
         )
     else:
         qs = list(
-            QuestionBank.objects.filter(section_type=section_type, is_active=True)
+            QuestionBank.objects.filter(
+                models.Q(section_type=section_type) | models.Q(section__code=section_type),
+                is_active=True,
+            )
         )
 
     if len(qs) < required_count:
@@ -180,7 +211,7 @@ def prepare_assessment(assessment: Assessment, user=None):
     """
     Validates question sufficiency and eligible colleges, transitioning DRAFT -> READY.
     """
-    validate_question_bank_sufficiency(assessment.aptitude_count, assessment.coding_count, assessment=assessment)
+    validate_question_bank_sufficiency(assessment=assessment)
     if not assessment.eligible_colleges.exists():
         raise ValidationError({"detail": "Assessment must have at least one assigned college before preparation."})
 
@@ -204,7 +235,7 @@ def open_assessment(assessment: Assessment, user=None):
     Opens an assessment for candidate attempts.
     Validates question bank sufficiency and eligible colleges.
     """
-    validate_question_bank_sufficiency(assessment.aptitude_count, assessment.coding_count, assessment=assessment)
+    validate_question_bank_sufficiency(assessment=assessment)
     if not assessment.eligible_colleges.exists():
         raise ValidationError({"detail": "Assessment must have at least one assigned college before opening."})
 
@@ -614,13 +645,31 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         raise ValidationError({"detail": f"Maximum attempts ({max_allowed}) reached for this assessment."})
 
     # Validate bank sufficiency for this assessment
-    apt_count = assessment.aptitude_count if assessment else config.aptitude_count
-    cod_count = assessment.coding_count if assessment else config.coding_count
-    validate_question_bank_sufficiency(apt_count, cod_count, assessment=assessment)
+    validate_question_bank_sufficiency(assessment=assessment)
 
-    # Balanced Question Selection
-    selected_aptitude = select_balanced_questions(QuestionBank.SectionType.APTITUDE, apt_count, assessment=assessment)
-    selected_coding = select_balanced_questions(QuestionBank.SectionType.CODING, cod_count, assessment=assessment)
+    # Dynamic or legacy question selection
+    all_selected = []
+    if assessment and assessment.section_allocations.exists():
+        allocations = assessment.section_allocations.select_related("section").order_by("order", "id")
+        order_counter = 1
+        for alloc in allocations:
+            sec_questions = select_balanced_questions(
+                alloc.section.code,
+                alloc.question_count,
+                assessment=assessment,
+            )
+            for q in sec_questions:
+                all_selected.append((q, order_counter, alloc.section.code))
+                order_counter += 1
+    else:
+        apt_count = assessment.aptitude_count if assessment else config.aptitude_count
+        cod_count = assessment.coding_count if assessment else config.coding_count
+        selected_aptitude = select_balanced_questions(QuestionBank.SectionType.APTITUDE, apt_count, assessment=assessment)
+        selected_coding = select_balanced_questions(QuestionBank.SectionType.CODING, cod_count, assessment=assessment)
+        for i, q in enumerate(selected_aptitude):
+            all_selected.append((q, i + 1, QuestionBank.SectionType.APTITUDE))
+        for i, q in enumerate(selected_coding):
+            all_selected.append((q, i + apt_count + 1, QuestionBank.SectionType.CODING))
 
     now = timezone.now()
     duration = assessment.duration_minutes if assessment else config.duration_minutes
@@ -637,12 +686,8 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
     )
 
     # Create Snapshots with option shuffling
-    all_selected = [(q, i + 1) for i, q in enumerate(selected_aptitude)] + [
-        (q, i + apt_count + 1) for i, q in enumerate(selected_coding)
-    ]
-
     snapshots = []
-    for q, order in all_selected:
+    for q, order, sec_code in all_selected:
         orig_options = [
             ("A", q.option_a),
             ("B", q.option_b),
@@ -663,7 +708,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
                 attempt=attempt,
                 question=q,
                 question_order=order,
-                section_type=q.section_type,
+                section_type=sec_code,
                 prompt=q.prompt,
                 option_a_text=shuffled[0][1],
                 option_b_text=shuffled[1][1],
@@ -753,21 +798,29 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
     now = timezone.now()
     snapshots = locked_attempt.question_snapshots.select_related("question").all()
 
+    # Dynamic section marks lookup
+    marks_map = {}
+    if locked_attempt.assessment and locked_attempt.assessment.section_allocations.exists():
+        for alloc in locked_attempt.assessment.section_allocations.select_related("section").all():
+            marks_map[alloc.section.code] = alloc.marks_per_question
+
     aptitude_score = 0
     coding_score = 0
+    total_score = 0
 
     for s in snapshots:
         if s.selected_option and s.selected_option == s.correct_option_key:
             s.is_correct = True
+            q_marks = marks_map.get(s.section_type, 1)
+            total_score += q_marks
             if s.section_type == QuestionBank.SectionType.APTITUDE:
-                aptitude_score += 1
-            else:
-                coding_score += 1
+                aptitude_score += q_marks
+            elif s.section_type == QuestionBank.SectionType.CODING:
+                coding_score += q_marks
         else:
             s.is_correct = False
         s.save(update_fields=["is_correct", "updated_at"])
 
-    total_score = aptitude_score + coding_score
     max_marks = (
         locked_attempt.assessment.total_marks
         if locked_attempt.assessment

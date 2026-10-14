@@ -21,8 +21,10 @@ class StudentCollegeOptionSerializer(serializers.ModelSerializer):
 
 class CandidateRegistrationSerializer(serializers.ModelSerializer):
     email = serializers.EmailField()
+    college = serializers.CharField(required=False, allow_blank=True, default="")
     college_id = serializers.IntegerField(required=False, allow_null=True)
     phone_number = serializers.CharField(required=True, allow_blank=False)
+    assessment_id = serializers.CharField(required=False, allow_null=True, allow_blank=True)
 
     class Meta:
         model = Candidate
@@ -36,6 +38,7 @@ class CandidateRegistrationSerializer(serializers.ModelSerializer):
             "department",
             "year_of_study",
             "phone_number",
+            "assessment_id",
         ]
 
     def validate_full_name(self, value):
@@ -106,6 +109,7 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
     max_tab_switches = serializers.SerializerMethodField()
     remaining_tab_switches = serializers.SerializerMethodField()
     server_time = serializers.SerializerMethodField()
+    sections = serializers.SerializerMethodField()
 
     class Meta:
         model = AssessmentAttempt
@@ -128,8 +132,44 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
             "remaining_tab_switches",
             "is_flagged",
             "flag_reason",
+            "sections",
             "questions",
         ]
+
+    def get_sections(self, obj):
+        if obj.assessment:
+            allocs = obj.assessment.section_allocations.select_related("section").order_by("order", "id")
+            if allocs.exists():
+                return [
+                    {
+                        "id": a.section.id,
+                        "name": a.section.name,
+                        "code": a.section.code,
+                        "description": a.section.description,
+                        "question_count": a.question_count,
+                        "marks_per_question": a.marks_per_question,
+                        "order": a.order,
+                    }
+                    for a in allocs
+                ]
+        # Deriving from snapshots if assessment has no allocations or legacy
+        seen_sections = []
+        added = set()
+        for s in obj.question_snapshots.order_by("question_order"):
+            sec = s.section_type
+            if sec not in added:
+                added.add(sec)
+                count = obj.question_snapshots.filter(section_type=sec).count()
+                name = "Aptitude" if sec == "APTITUDE" else ("Coding Fundamentals" if sec == "CODING" else sec.replace("_", " ").title())
+                seen_sections.append({
+                    "id": len(added),
+                    "name": name,
+                    "code": sec,
+                    "question_count": count,
+                    "marks_per_question": 1,
+                    "order": len(added),
+                })
+        return seen_sections
 
     def get_assessment_title(self, obj):
         if obj.assessment:
@@ -240,15 +280,10 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
             if is_auth and (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)):
                 is_staff = True
 
-        is_released = False
-        if instance.assessment:
-            is_released = bool(instance.assessment.is_results_released)
-        elif instance.config:
-            is_released = True
+        data["is_results_released"] = True
 
-        data["is_results_released"] = is_released
-
-        if not is_staff and not is_released:
+        # Students always see completion state, never numerical scores
+        if not is_staff:
             for sensitive_key in [
                 "aptitude_score",
                 "coding_score",
@@ -261,8 +296,6 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
         return data
 
     def get_is_results_released(self, obj):
-        if obj.assessment:
-            return bool(obj.assessment.is_results_released)
         return True
 
     def get_assessment_title(self, obj):
@@ -310,6 +343,35 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
         cod_total = len(cod_snapshots) or cod_default
         cod_pct = round((cod_correct / float(cod_total)) * 100.0, 1) if cod_total else 0.0
 
+        # Dynamic section breakdown
+        dynamic_sections = {}
+        for s in snapshots:
+            sec_code = s.section_type
+            if sec_code not in dynamic_sections:
+                dynamic_sections[sec_code] = {
+                    "code": sec_code,
+                    "name": sec_code.replace("_", " ").title(),
+                    "score": 0,
+                    "total": 0,
+                    "percentage": 0.0,
+                    "correct": 0,
+                    "incorrect": 0,
+                    "unattempted": 0,
+                }
+            entry = dynamic_sections[sec_code]
+            entry["total"] += 1
+            if s.is_correct is True:
+                entry["correct"] += 1
+                entry["score"] += 1
+            elif not (s.selected_option and s.selected_option.strip()):
+                entry["unattempted"] += 1
+            else:
+                entry["incorrect"] += 1
+
+        for sec_code, entry in dynamic_sections.items():
+            if entry["total"] > 0:
+                entry["percentage"] = round((entry["correct"] / float(entry["total"])) * 100.0, 1)
+
         time_taken_seconds = 0
         time_taken_display = "N/A"
         if obj.started_at and obj.submitted_at:
@@ -343,6 +405,7 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
                 "incorrect": cod_incorrect,
                 "unattempted": cod_unattempted,
             },
+            "sections": list(dynamic_sections.values()),
         }
 
 
@@ -356,6 +419,7 @@ class StudentCandidateAssessmentSerializer(serializers.ModelSerializer):
     latest_attempt_id = serializers.SerializerMethodField()
     latest_attempt_state = serializers.SerializerMethodField()
     latest_attempt_score = serializers.SerializerMethodField()
+    sections = serializers.SerializerMethodField()
 
     class Meta:
         model = Assessment
@@ -379,6 +443,7 @@ class StudentCandidateAssessmentSerializer(serializers.ModelSerializer):
             "latest_attempt_id",
             "latest_attempt_state",
             "latest_attempt_score",
+            "sections",
         ]
 
     def get_is_open(self, obj):
@@ -424,8 +489,43 @@ class StudentCandidateAssessmentSerializer(serializers.ModelSerializer):
         return att.state if att else None
 
     def get_latest_attempt_score(self, obj):
-        cand = self._get_candidate()
-        if not cand or not obj.is_results_released:
-            return None
-        att = obj.attempts.filter(candidate=cand).order_by("-created_at").first()
-        return att.total_score if att and att.state == AssessmentAttempt.State.SUBMITTED else None
+        # As per product requirements, student-facing view does not expose score
+        return None
+
+    def get_sections(self, obj):
+        allocs = obj.section_allocations.select_related("section").order_by("order", "id")
+        if allocs.exists():
+            return [
+                {
+                    "id": a.section.id,
+                    "name": a.section.name,
+                    "code": a.section.code,
+                    "description": a.section.description,
+                    "question_count": a.question_count,
+                    "marks_per_question": a.marks_per_question,
+                    "order": a.order,
+                }
+                for a in allocs
+            ]
+        legacy = []
+        if obj.aptitude_count:
+            legacy.append({
+                "id": 1,
+                "name": "Aptitude",
+                "code": "APTITUDE",
+                "description": "General aptitude and logical reasoning",
+                "question_count": obj.aptitude_count,
+                "marks_per_question": 1,
+                "order": 1,
+            })
+        if obj.coding_count:
+            legacy.append({
+                "id": 2,
+                "name": "Coding Fundamentals",
+                "code": "CODING",
+                "description": "Core programming and algorithmic thinking",
+                "question_count": obj.coding_count,
+                "marks_per_question": 1,
+                "order": 2,
+            })
+        return legacy

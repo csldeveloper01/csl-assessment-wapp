@@ -15,6 +15,8 @@ from .models import (
     AssessmentAttempt,
     AttemptQuestionSnapshot,
     IntegrityEvent,
+    AssessmentSection,
+    AssessmentSectionAllocation,
 )
 
 
@@ -311,3 +313,20 @@ class IntegrityEventAdmin(admin.ModelAdmin):
     def get_candidate_name(self, obj):
         return obj.attempt.candidate.full_name
     get_candidate_name.short_description = "Candidate"
+
+
+@admin.register(AssessmentSection)
+class AssessmentSectionAdmin(admin.ModelAdmin):
+    list_display = ("name", "code", "order", "is_active", "created_at")
+    list_filter = ("is_active",)
+    search_fields = ("name", "code", "description")
+    ordering = ("order", "name")
+
+
+@admin.register(AssessmentSectionAllocation)
+class AssessmentSectionAllocationAdmin(admin.ModelAdmin):
+    list_display = ("assessment", "section", "question_count", "marks_per_question", "order")
+    list_filter = ("section",)
+    search_fields = ("assessment__title", "assessment__code", "section__name")
+    ordering = ("assessment", "order")
+

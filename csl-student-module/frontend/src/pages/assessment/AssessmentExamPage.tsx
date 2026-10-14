@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import cslTypographyLogo from '../../assets/CSL-TYPOGRAPHY.png';
 import {
@@ -23,8 +23,24 @@ export function AssessmentExamPage() {
   const [markedForLater, setMarkedForLater] = useState<Record<number, boolean>>({});
   const [saveStatus, setSaveStatus] = useState<Record<number, 'saved' | 'saving' | 'failed'>>({});
 
-  // Active section tab for navigation filtering ('APTITUDE' vs 'CODING')
-  const [activeSectionTab, setActiveSectionTab] = useState<'APTITUDE' | 'CODING'>('APTITUDE');
+  // Active section tab for navigation filtering (dynamic section code)
+  const [activeSectionTab, setActiveSectionTab] = useState<string>('APTITUDE');
+
+  // Derive dynamic sections from attempt questions
+  const sectionsList = useMemo(() => {
+    if (!attempt || !attempt.questions) return [];
+    const map = new Map<string, { code: string; count: number }>();
+    attempt.questions.forEach((q) => {
+      const secCode = q.section_type || 'GENERAL';
+      const existing = map.get(secCode);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        map.set(secCode, { code: secCode, count: 1 });
+      }
+    });
+    return Array.from(map.values());
+  }, [attempt]);
 
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
   const [targetEndTimeMs, setTargetEndTimeMs] = useState<number | null>(null);
@@ -845,79 +861,64 @@ export function AssessmentExamPage() {
               padding: '12px',
               borderBottom: '1px solid #FAF7F3',
               display: 'grid',
-              gridTemplateColumns: '1fr 1fr',
+              gridTemplateColumns: `repeat(${Math.min(sectionsList.length || 2, 2)}, 1fr)`,
               gap: '8px',
             }}
           >
-            {/* Aptitude Tab */}
-            <button
-              onClick={() => {
-                setActiveSectionTab('APTITUDE');
-                const firstAptIdx = attempt.questions.findIndex(
-                  (q) => q.section_type === 'APTITUDE'
+            {sectionsList.length > 0 ? (
+              sectionsList.map((sec) => {
+                const isActive = activeSectionTab === sec.code;
+                const isCoding = sec.code.toUpperCase() === 'CODING';
+                return (
+                  <button
+                    key={sec.code}
+                    onClick={() => {
+                      setActiveSectionTab(sec.code);
+                      const firstIdx = attempt.questions.findIndex((q) => q.section_type === sec.code);
+                      if (firstIdx !== -1 && currentQ.section_type !== sec.code) {
+                        setCurrentIndex(firstIdx);
+                      }
+                    }}
+                    style={{
+                      padding: '8px 6px',
+                      borderRadius: '8px',
+                      border: isActive ? 'none' : '1px solid #E2E8F0',
+                      backgroundColor: isActive ? '#1455B8' : '#FFFFFF',
+                      color: isActive ? '#FFFFFF' : '#475569',
+                      cursor: 'pointer',
+                      textAlign: 'center',
+                      transition: 'all 0.15s ease',
+                    }}
+                  >
+                    <div style={{ fontSize: '12px', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
+                      <span>{isCoding ? '</>' : '🎯'}</span> {sec.code}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: '10px',
+                        color: isActive ? '#E0E7FF' : '#94A3B8',
+                        marginTop: '2px',
+                      }}
+                    >
+                      {sec.count} Questions
+                    </div>
+                  </button>
                 );
-                if (firstAptIdx !== -1 && currentQ.section_type !== 'APTITUDE') {
-                  setCurrentIndex(firstAptIdx);
-                }
-              }}
-              style={{
-                padding: '8px 6px',
-                borderRadius: '8px',
-                border: activeSectionTab === 'APTITUDE' ? 'none' : '1px solid #E2E8F0',
-                backgroundColor: activeSectionTab === 'APTITUDE' ? '#1455B8' : '#FFFFFF',
-                color: activeSectionTab === 'APTITUDE' ? '#FFFFFF' : '#475569',
-                cursor: 'pointer',
-                textAlign: 'center',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              <div style={{ fontSize: '12px', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
-                <span>🎯</span> Aptitude
-              </div>
-              <div
+              })
+            ) : (
+              <button
                 style={{
-                  fontSize: '10px',
-                  color: activeSectionTab === 'APTITUDE' ? '#E0E7FF' : '#94A3B8',
-                  marginTop: '2px',
+                  padding: '8px 6px',
+                  borderRadius: '8px',
+                  border: 'none',
+                  backgroundColor: '#1455B8',
+                  color: '#FFFFFF',
+                  textAlign: 'center',
                 }}
               >
-                25 Questions
-              </div>
-            </button>
-
-            {/* Coding Tab */}
-            <button
-              onClick={() => {
-                setActiveSectionTab('CODING');
-                const firstCodIdx = attempt.questions.findIndex((q) => q.section_type === 'CODING');
-                if (firstCodIdx !== -1 && currentQ.section_type !== 'CODING') {
-                  setCurrentIndex(firstCodIdx);
-                }
-              }}
-              style={{
-                padding: '8px 6px',
-                borderRadius: '8px',
-                border: activeSectionTab === 'CODING' ? 'none' : '1px solid #E2E8F0',
-                backgroundColor: activeSectionTab === 'CODING' ? '#1455B8' : '#FFFFFF',
-                color: activeSectionTab === 'CODING' ? '#FFFFFF' : '#475569',
-                cursor: 'pointer',
-                textAlign: 'center',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              <div style={{ fontSize: '12px', fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '4px' }}>
-                <span>&lt;/&gt;</span> Coding
-              </div>
-              <div
-                style={{
-                  fontSize: '10px',
-                  color: activeSectionTab === 'CODING' ? '#E0E7FF' : '#94A3B8',
-                  marginTop: '2px',
-                }}
-              >
-                25 Questions
-              </div>
-            </button>
+                Questions
+              </button>
+            )}
           </div>
 
           {/* Section Progress Bar */}
@@ -1157,7 +1158,7 @@ export function AssessmentExamPage() {
                     borderRadius: '9999px',
                   }}
                 >
-                  {currentQ.section_type === 'APTITUDE' ? 'Aptitude' : 'Coding Fundamentals'}
+                  {currentQ.section_type === 'APTITUDE' ? 'Aptitude' : currentQ.section_type === 'CODING' ? 'Coding Fundamentals' : currentQ.section_type}
                 </span>
 
                 {/* Save Status pill */}

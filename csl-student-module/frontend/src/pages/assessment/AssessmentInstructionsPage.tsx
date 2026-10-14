@@ -649,15 +649,26 @@ export function AssessmentInstructionsPage() {
               lineHeight: 1.7,
             }}
           >
-            <li>
-              <strong>Section 1: General Aptitude ({aptitudeCount} Questions)</strong> — Quantitative Problem
-              Solving, Logical Reasoning, and Verbal Comprehension.
-            </li>
-            <li>
-              <strong>Section 2: Coding Fundamentals ({codingCount} Questions)</strong> — Core Programming
-              Principles, Control Flow, Functions, OOP Concepts, and Data Structures. (Conceptual
-              MCQs; code execution is not required).
-            </li>
+            {selectedAssessment?.sections && selectedAssessment.sections.length > 0 ? (
+              selectedAssessment.sections.map((sec, idx) => (
+                <li key={sec.id || idx}>
+                  <strong>
+                    Section {idx + 1}: {sec.name} ({sec.question_count} Questions, {sec.total_marks || sec.question_count * sec.marks_per_question} Marks)
+                  </strong>
+                </li>
+              ))
+            ) : (
+              <>
+                <li>
+                  <strong>Section 1: General Aptitude ({aptitudeCount} Questions)</strong> — Quantitative Problem
+                  Solving, Logical Reasoning, and Verbal Comprehension.
+                </li>
+                <li>
+                  <strong>Section 2: Coding Fundamentals ({codingCount} Questions)</strong> — Core Programming
+                  Principles, Control Flow, Functions, OOP Concepts, and Data Structures.
+                </li>
+              </>
+            )}
             <li>
               Each correct question is awarded <strong>1 mark</strong>. There is no negative marking
               for incorrect answers.

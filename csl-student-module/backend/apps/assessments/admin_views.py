@@ -18,6 +18,8 @@ from .models import (
     AssessmentConfig,
     IntegrityEvent,
     AssessmentAuditLog,
+    AssessmentSection,
+    AssessmentSectionAllocation,
 )
 from .admin_permissions import IsCSLAdminUser
 from .admin_serializers import (
@@ -37,6 +39,8 @@ from .admin_serializers import (
     AdminAttemptReviewSerializer,
     AdminResultSerializer,
     AdminIntegrityEventSerializer,
+    AdminAssessmentSectionSerializer,
+    AdminAssessmentSectionAllocationSerializer,
 )
 from django.http import HttpResponse
 from .services import (
@@ -278,17 +282,11 @@ class AdminAssessmentListView(APIView):
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-        college_ids = serializer.validated_data.pop("eligible_college_ids", [])
-
         with transaction.atomic():
-            assessment = Assessment.objects.create(
-                **serializer.validated_data,
+            assessment = serializer.save(
                 status=Assessment.Status.DRAFT,
                 created_by=request.user,
             )
-            if college_ids:
-                colleges = College.objects.filter(id__in=college_ids)
-                assessment.eligible_colleges.set(colleges)
 
             log_assessment_audit(
                 action=AssessmentAuditLog.Action.ASSESSMENT_CREATED,
@@ -919,9 +917,13 @@ class AdminQuestionImportCSVView(APIView):
                     errors.append(f"Row {row_idx}: Missing required fields: {', '.join(missing)}")
                     continue
 
-                sec = row["section_type"].strip().upper()
-                if sec not in [QuestionBank.SectionType.APTITUDE, QuestionBank.SectionType.CODING]:
-                    errors.append(f"Row {row_idx}: Invalid section_type '{sec}'. Must be APTITUDE or CODING.")
+                sec = row["section_type"].strip()
+                sec_obj = AssessmentSection.objects.filter(code__iexact=sec).first()
+                if not sec_obj:
+                    sec_obj = AssessmentSection.objects.filter(name__iexact=sec).first()
+                if not sec_obj:
+                    active_codes = list(AssessmentSection.objects.filter(is_active=True).values_list("name", flat=True))
+                    errors.append(f"Row {row_idx}: Invalid section '{sec}'. Available sections: {', '.join(active_codes)}.")
                     continue
 
                 correct = row["correct_option"].strip().upper()
@@ -933,12 +935,13 @@ class AdminQuestionImportCSVView(APIView):
                 if diff not in ["EASY", "MEDIUM", "HARD"]:
                     diff = "MEDIUM"
 
-                category_val = (row.get("category") or "").strip() or sec
+                category_val = (row.get("category") or "").strip() or sec_obj.name
 
                 try:
                     q = QuestionBank.objects.create(
                         prompt=row["prompt"].strip(),
-                        section_type=sec,
+                        section=sec_obj,
+                        section_type=sec_obj.code,
                         category=category_val,
                         difficulty=diff,
                         option_a=row["option_a"].strip(),
@@ -996,12 +999,81 @@ class AdminQuestionBulkUpdateView(APIView):
 
         with transaction.atomic():
             matched_qs = QuestionBank.objects.filter(id__in=ids)
+            if "section_type" in updates:
+                sec_type = updates["section_type"]
+                sec_obj = AssessmentSection.objects.filter(code__iexact=sec_type).first() or AssessmentSection.objects.filter(name__iexact=sec_type).first()
+                if sec_obj:
+                    updates["section"] = sec_obj
+                    updates["section_type"] = sec_obj.code
             updated_count = matched_qs.update(**updates)
 
         return Response({
             "updated_count": updated_count,
             "message": f"Successfully updated {updated_count} question(s).",
         })
+
+
+class AdminSectionListCreateView(APIView):
+    """
+    CRUD API for reusable assessment sections library.
+    Sections are persistent across the platform and selectable across multiple assessments.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def get(self, request):
+        sections = AssessmentSection.objects.all().order_by("order", "name")
+        serializer = AdminAssessmentSectionSerializer(sections, many=True)
+        return Response(serializer.data)
+
+    def post(self, request):
+        serializer = AdminAssessmentSectionSerializer(data=request.data)
+        if serializer.is_valid():
+            section = serializer.save()
+            return Response(AdminAssessmentSectionSerializer(section).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminSectionDetailView(APIView):
+    """
+    Detailed management for an individual reusable section: get, update, safe delete.
+    Safe deletion enforces integrity: prevents deleting sections in use by questions or assessments.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def get_object(self, pk):
+        return get_object_or_404(AssessmentSection, pk=pk)
+
+    def get(self, request, pk):
+        section = self.get_object(pk)
+        return Response(AdminAssessmentSectionSerializer(section).data)
+
+    def put(self, request, pk):
+        section = self.get_object(pk)
+        serializer = AdminAssessmentSectionSerializer(section, data=request.data, partial=True)
+        if serializer.is_valid():
+            section = serializer.save()
+            return Response(AdminAssessmentSectionSerializer(section).data)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, pk):
+        section = self.get_object(pk)
+        q_count = QuestionBank.objects.filter(Q(section=section) | Q(section_type=section.code)).count()
+        a_count = section.assessment_allocations.count()
+
+        if q_count > 0 or a_count > 0:
+            return Response(
+                {
+                    "detail": f"Cannot delete section '{section.name}' because {q_count} question(s) and {a_count} assessment(s) depend on it. Please deactivate the section instead."
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        section_name = section.name
+        section.delete()
+        return Response(
+            {"message": f"Section '{section_name}' deleted successfully."},
+            status=status.HTTP_200_OK,
+        )
 
 
 class AdminConfigView(APIView):

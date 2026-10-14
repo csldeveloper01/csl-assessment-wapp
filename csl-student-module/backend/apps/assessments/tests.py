@@ -29,7 +29,17 @@ from apps.assessments.tokens import (
 
 class ComprehensiveAssessmentTests(TestCase):
     def setUp(self):
+        from apps.users.models import User
         self.client = Client()
+        self.admin_user = User.objects.create_user(
+            username="admin_comp",
+            email="admin_comp@csl.com",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.AccountStatus.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
         self.config = AssessmentConfig.objects.create(
             title="CSL Initial Assessment",
             duration_minutes=60,
@@ -173,44 +183,38 @@ class ComprehensiveAssessmentTests(TestCase):
         self.assertEqual(event_res.status_code, 200)
         self.assertEqual(event_res.data["tab_switches"], 1)
 
-        # 6. Finalize Attempt
+        # 6. Finalize Attempt (scores concealed from student view)
         fin_res = self.client.post(f"/api/assessment/attempts/{attempt_id}/finalize/", **attempt_headers)
         self.assertEqual(fin_res.status_code, 200)
         self.assertEqual(fin_res.data["state"], AssessmentAttempt.State.SUBMITTED)
-        self.assertFalse(fin_res.data.get("is_results_released", True))
         self.assertNotIn("total_score", fin_res.data)
         self.assertIn("message", fin_res.data)
+        self.assertEqual(fin_res.data["message"], "Assessment Completed")
 
-        # 7. Check Results View before release: withheld
-        res_view_pending = self.client.get(f"/api/assessment/attempts/{attempt_id}/result/", **attempt_headers)
-        self.assertEqual(res_view_pending.status_code, 200)
-        self.assertFalse(res_view_pending.data["is_results_released"])
-        self.assertNotIn("total_score", res_view_pending.data)
-        self.assertNotIn("breakdown", res_view_pending.data)
+        # 7. Student Results View: score withheld, completion state confirmed
+        res_view_student = self.client.get(f"/api/assessment/attempts/{attempt_id}/result/", **attempt_headers)
+        self.assertEqual(res_view_student.status_code, 200)
+        self.assertNotIn("total_score", res_view_student.data)
+        self.assertNotIn("breakdown", res_view_student.data)
+        self.assertEqual(res_view_student.data["message"], "Assessment Completed")
 
-        # 8. Release results via assessment
-        attempt = AssessmentAttempt.objects.get(id=attempt_id)
-        if attempt.assessment:
-            attempt.assessment.is_results_released = True
-            attempt.assessment.save()
+        # 8. Administrative Result Access: authorized staff access to full verified scores and breakdown
+        self.client.force_login(self.admin_user)
+        admin_res_view = self.client.get(f"/api/assessment/attempts/{attempt_id}/result/")
+        self.assertEqual(admin_res_view.status_code, 200)
+        self.assertEqual(admin_res_view.data["candidate_name"], "Karthik R")
+        self.assertIn("total_score", admin_res_view.data)
+        self.assertEqual(admin_res_view.data["year_of_study"], "3rd Year")
+        self.assertIn("breakdown", admin_res_view.data)
 
-        # 9. Check Results View after release: scores and breakdown now present
-        res_view = self.client.get(f"/api/assessment/attempts/{attempt_id}/result/", **attempt_headers)
-        self.assertEqual(res_view.status_code, 200)
-        self.assertTrue(res_view.data["is_results_released"])
-        self.assertEqual(res_view.data["candidate_name"], "Karthik R")
-        self.assertIn("total_score", res_view.data)
-        self.assertEqual(res_view.data["year_of_study"], "3rd Year")
-        self.assertIn("breakdown", res_view.data)
-
-        breakdown = res_view.data["breakdown"]
+        breakdown = admin_res_view.data["breakdown"]
         apt = breakdown["aptitude"]
         cod = breakdown["coding"]
         self.assertEqual(apt["total"], 25)
         self.assertEqual(cod["total"], 25)
         self.assertEqual(apt["correct"] + apt["incorrect"] + apt["unattempted"], 25)
         self.assertEqual(cod["correct"] + cod["incorrect"] + cod["unattempted"], 25)
-        self.assertEqual(apt["correct"] + cod["correct"], res_view.data["total_score"])
+        self.assertEqual(apt["correct"] + cod["correct"], admin_res_view.data["total_score"])
         self.assertIn("time_taken_display", breakdown)
 
     def test_cross_candidate_tampering_forbidden(self):
@@ -700,26 +704,24 @@ class CSLAdminPanelAPITests(TestCase):
 
     def test_admin_config_update_validation(self):
         self.client.force_login(self.admin_user)
-        # Invalid config (total_marks != apt + cod)
+        # Invalid platform-wide config (max_attempts < 1, max_tab_switches < 1)
         bad_data = {
-            "duration_minutes": 60,
-            "total_marks": 60,
-            "aptitude_count": 25,
-            "coding_count": 25,
+            "max_attempts": 0,
+            "max_tab_switches_warning": 0,
         }
         res_bad = self.client.put("/api/csl-admin/config/", bad_data, content_type="application/json")
         self.assertEqual(res_bad.status_code, 400)
 
-        # Valid config
+        # Valid platform-wide config
         good_data = {
-            "duration_minutes": 75,
-            "total_marks": 50,
-            "aptitude_count": 25,
-            "coding_count": 25,
+            "title": "CSL Global Platform Configuration",
+            "max_attempts": 2,
+            "max_tab_switches_warning": 3,
         }
         res_good = self.client.put("/api/csl-admin/config/", good_data, content_type="application/json")
         self.assertEqual(res_good.status_code, 200)
-        self.assertEqual(res_good.data["duration_minutes"], 75)
+        self.assertEqual(res_good.data["max_attempts"], 2)
+        self.assertEqual(res_good.data["max_tab_switches_warning"], 3)
 
     def test_admin_results_and_review(self):
         self.client.force_login(self.admin_user)
@@ -1088,6 +1090,242 @@ class CollegeAndAssessmentManagementTests(TestCase):
         self.assertEqual(res_filter_a1.status_code, 200)
         ids_a1 = [item["id"] for item in res_filter_a1.data]
         self.assertNotIn(q_id, ids_a1)
+
+
+class RegressionAndDynamicSectionTests(TestCase):
+    def setUp(self):
+        from apps.users.models import User
+        from apps.assessments.models import AssessmentSection, AssessmentSectionAllocation
+        self.admin_user = User.objects.create_user(
+            username="regression_admin",
+            email="reg_admin@csl.internal",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.AccountStatus.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.college = College.objects.create(
+            name="Regression College",
+            code="REG_COL",
+            is_active=True,
+        )
+
+    def test_cors_preflight_allows_custom_token(self):
+        """
+        Regression: Preflight OPTIONS request with x-assessment-token header
+        must be allowed for https://csl-assessment-wapp.vercel.app origin.
+        """
+        response = self.client.options(
+            "/api/assessment/start/",
+            HTTP_ORIGIN="https://csl-assessment-wapp.vercel.app",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="x-assessment-token, content-type",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.headers.get("Access-Control-Allow-Origin"),
+            "https://csl-assessment-wapp.vercel.app",
+        )
+        allow_headers = response.headers.get("Access-Control-Allow-Headers", "").lower()
+        self.assertIn("x-assessment-token", allow_headers)
+
+        # Untrusted origin should NOT be reflected
+        bad_response = self.client.options(
+            "/api/assessment/start/",
+            HTTP_ORIGIN="https://malicious-site.example.com",
+            HTTP_ACCESS_CONTROL_REQUEST_METHOD="POST",
+            HTTP_ACCESS_CONTROL_REQUEST_HEADERS="x-assessment-token",
+        )
+        self.assertNotEqual(
+            bad_response.headers.get("Access-Control-Allow-Origin"),
+            "https://malicious-site.example.com",
+        )
+
+    def test_idempotent_registration_lifecycle(self):
+        """
+        Regression: Candidates re-registering before start, during in-progress,
+        and after completion must be handled idempotently according to policy.
+        """
+        # Create an open assessment for the college
+        assessment = Assessment.objects.create(
+            code="REG-ASSESS-01",
+            title="Regression Assessment",
+            status=Assessment.Status.OPEN,
+            duration_minutes=30,
+            total_marks=2,
+            aptitude_count=1,
+            coding_count=1,
+            max_attempts=1,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        # Create 1 aptitude and 1 coding question
+        QuestionBank.objects.create(
+            prompt="Aptitude Q1",
+            section_type="APTITUDE",
+            option_a="1", option_b="2", option_c="3", option_d="4",
+            correct_option="A",
+            is_active=True,
+        )
+        QuestionBank.objects.create(
+            prompt="Coding Q1",
+            section_type="CODING",
+            option_a="1", option_b="2", option_c="3", option_d="4",
+            correct_option="A",
+            is_active=True,
+        )
+
+        reg_payload = {
+            "full_name": "Suresh Kumar",
+            "register_number": "REG-2026-001",
+            "college_id": self.college.id,
+            "email": "suresh@example.com",
+            "department": "ECE",
+            "year_of_study": "3rd Year",
+            "phone_number": "9876543210",
+        }
+
+        # 1. Initial registration -> 201 Created, NEW_REGISTRATION
+        res1 = self.client.post("/api/assessment/register/", reg_payload, content_type="application/json")
+        self.assertEqual(res1.status_code, 201)
+        self.assertEqual(res1.data["registration_status"], "NEW_REGISTRATION")
+        self.assertFalse(res1.data["is_active_attempt"])
+        self.assertFalse(res1.data["already_completed"])
+        cand_id = res1.data["candidate_id"]
+        token1 = res1.data["assessment_token"]
+
+        # 2. Repeated registration BEFORE starting -> 200 OK, NOT_STARTED, no duplicate candidate
+        res2 = self.client.post("/api/assessment/register/", reg_payload, content_type="application/json")
+        self.assertEqual(res2.status_code, 200)
+        self.assertEqual(res2.data["registration_status"], "NOT_STARTED")
+        self.assertEqual(res2.data["candidate_id"], cand_id)
+        self.assertFalse(res2.data["is_active_attempt"])
+        self.assertFalse(res2.data["already_completed"])
+        self.assertEqual(Candidate.objects.filter(email="suresh@example.com").count(), 1)
+
+        # 3. Start assessment attempt
+        start_res = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token1}",
+        )
+        self.assertEqual(start_res.status_code, 200)
+        attempt_id = start_res.data["id"]
+
+        # 4. Repeated registration WHILE IN-PROGRESS -> 200 OK, IN_PROGRESS, preserves resume
+        res3 = self.client.post("/api/assessment/register/", reg_payload, content_type="application/json")
+        self.assertEqual(res3.status_code, 200)
+        self.assertEqual(res3.data["registration_status"], "IN_PROGRESS")
+        self.assertTrue(res3.data["is_active_attempt"])
+        self.assertFalse(res3.data["already_completed"])
+        self.assertEqual(res3.data["attempt_id"], attempt_id)
+
+        # 5. Finalize assessment attempt
+        attempt_token = start_res.data["assessment_token"]
+        fin_res = self.client.post(
+            f"/api/assessment/attempts/{attempt_id}/finalize/",
+            HTTP_AUTHORIZATION=f"Bearer {attempt_token}",
+        )
+        self.assertEqual(fin_res.status_code, 200)
+
+        # 6. Repeated registration AFTER FINALIZATION -> 200 OK, COMPLETED (max attempts reached)
+        res4 = self.client.post("/api/assessment/register/", reg_payload, content_type="application/json")
+        self.assertEqual(res4.status_code, 200)
+        self.assertEqual(res4.data["registration_status"], "COMPLETED")
+        self.assertFalse(res4.data["is_active_attempt"])
+        self.assertTrue(res4.data["already_completed"])
+
+    def test_dynamic_reusable_section_library_and_attempt_flow(self):
+        """
+        Regression: Admin creates reusable section, attaches to assessment with allocation,
+        candidate takes assessment and snapshots are properly tagged with the section.
+        """
+        from apps.assessments.models import AssessmentSection, AssessmentSectionAllocation
+        self.client.force_login(self.admin_user)
+
+        # 1. Admin creates reusable section via API
+        sec_res = self.client.post(
+            "/api/csl-admin/sections/",
+            {
+                "name": "Logical Reasoning",
+                "code": "LOGICAL",
+                "description": "Critical thinking and logic puzzles",
+                "is_active": True,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(sec_res.status_code, 201)
+        sec_id = sec_res.data["id"]
+
+        # 2. Add question to Question Bank for this dynamic section
+        QuestionBank.objects.create(
+            prompt="Logic Q1: If all A are B...",
+            section_id=sec_id,
+            section_type="LOGICAL",
+            option_a="Yes", option_b="No", option_c="Maybe", option_d="Unknown",
+            correct_option="A",
+            is_active=True,
+        )
+
+        # 3. Create assessment with dynamic section allocation
+        assess_res = self.client.post(
+            "/api/csl-admin/assessments/",
+            {
+                "title": "Logic Test 2026",
+                "code": "LOGIC-2026",
+                "duration_minutes": 20,
+                "total_marks": 2,
+                "eligible_college_ids": [self.college.id],
+                "sections": [
+                    {
+                        "section_id": sec_id,
+                        "question_count": 1,
+                        "marks_per_question": 2,
+                    }
+                ],
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(assess_res.status_code, 201)
+        assess_id = assess_res.data["id"]
+
+        # 4. Open assessment
+        open_res = self.client.post(f"/api/csl-admin/assessments/{assess_id}/open/")
+        self.assertEqual(open_res.status_code, 200)
+
+        # 5. Candidate registers and takes test
+        cand_res = self.client.post(
+            "/api/assessment/register/",
+            {
+                "full_name": "Priya V",
+                "register_number": "PRIYA-001",
+                "college_id": self.college.id,
+                "email": "priya@example.com",
+                "department": "IT",
+                "year_of_study": "Final Year",
+                "phone_number": "9123456789",
+                "assessment_id": assess_id,
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(cand_res.status_code, 201)
+        cand_token = cand_res.data["assessment_token"]
+
+        # 6. Start assessment
+        start_res = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": assess_id},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {cand_token}",
+        )
+        self.assertEqual(start_res.status_code, 200)
+        attempt_id = start_res.data["id"]
+        questions = start_res.data["questions"]
+        self.assertEqual(len(questions), 1)
+        self.assertEqual(questions[0]["section_type"], "LOGICAL")
+        self.assertEqual(start_res.data["total_questions"], 2)  # max_marks is 2
 
 
 

@@ -49,6 +49,15 @@ export interface CandidateAssessmentItem {
   description: string;
   duration_minutes: number;
   total_marks: number;
+  sections?: Array<{
+    id: number;
+    code: string;
+    name: string;
+    question_count: number;
+    marks_per_question: number;
+    total_marks: number;
+    order: number;
+  }>;
   aptitude_count: number;
   coding_count: number;
   max_attempts: number;
@@ -111,7 +120,7 @@ export interface QuestionOption {
 
 export interface QuestionSnapshot {
   question_order: number;
-  section_type: 'APTITUDE' | 'CODING';
+  section_type: string;
   category?: string;
   prompt: string;
   options: QuestionOption[];

@@ -3,6 +3,7 @@ from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAdminUser
+from rest_framework.authentication import SessionAuthentication, BasicAuthentication
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.utils import timezone
@@ -174,57 +175,125 @@ class CandidateRegisterView(APIView):
             )
 
         with transaction.atomic():
-            # Check existing candidate by email
+            # Check existing candidate by email, or by college + register number
             existing_candidate = Candidate.objects.select_for_update().filter(email=email).first()
+            if not existing_candidate:
+                existing_candidate = Candidate.objects.select_for_update().filter(
+                    college_ref=college_obj, register_number=reg_no
+                ).first()
 
             if existing_candidate:
-                # Identity check: prevent identity spoofing or account takeover
-                identity_errors = {}
-                if existing_candidate.register_number and existing_candidate.register_number.strip().upper() != reg_no:
-                    identity_errors["register_number"] = [
-                        f"Email is registered with register number '{existing_candidate.register_number}'. Provided register number does not match."
-                    ]
-                if existing_candidate.college_ref and existing_candidate.college_ref_id != college_obj.id:
-                    identity_errors["college_id"] = [
-                        f"Email is registered under '{existing_candidate.college_ref.name}'. Selected institution does not match registered profile."
-                    ]
-                if existing_candidate.phone_number and phone_no and existing_candidate.phone_number != phone_no:
-                    identity_errors["phone_number"] = [
-                        "Email is registered with a different mobile phone number."
-                    ]
-                if existing_candidate.full_name and existing_candidate.full_name.strip().lower() != data["full_name"].strip().lower():
-                    identity_errors["full_name"] = [
-                        f"Email is registered under name '{existing_candidate.full_name}'. Provided name does not match."
-                    ]
+                # Active candidate & institution check
+                if not existing_candidate.is_active:
+                    return Response(
+                        {"detail": "Your candidate profile has been deactivated. Please contact your administrator."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
+                if college_obj and not college_obj.is_active:
+                    return Response(
+                        {"detail": f"Institutional registration for {college_obj.name} is currently suspended."},
+                        status=status.HTTP_403_FORBIDDEN,
+                    )
 
-                if identity_errors:
-                    return Response(identity_errors, status=status.HTTP_400_BAD_REQUEST)
-
-                # If phone number was previously unset, persist provided mobile number safely
-                if not existing_candidate.phone_number and phone_no:
+                # Keep candidate record updated idempotently
+                if not existing_candidate.email:
+                    existing_candidate.email = email
+                if phone_no:
                     existing_candidate.phone_number = phone_no
-                    existing_candidate.save(update_fields=["phone_number"])
+                if data.get("department"):
+                    existing_candidate.department = data.get("department")
+                if data.get("year_of_study"):
+                    existing_candidate.year_of_study = data.get("year_of_study")
+                if data.get("full_name") and existing_candidate.full_name != data["full_name"]:
+                    existing_candidate.full_name = data["full_name"]
+                if existing_candidate.college_ref_id != college_obj.id:
+                    existing_candidate.college_ref = college_obj
+                    existing_candidate.college = college_obj.name
+                existing_candidate.save()
 
-                active_attempt = existing_candidate.attempts.filter(
-                    state__in=[AssessmentAttempt.State.CREATED, AssessmentAttempt.State.IN_PROGRESS]
-                ).order_by("-created_at").first()
+                # Determine target assessment if specified or singular
+                target_assessment = None
+                target_assessment_id = data.get("assessment_id")
+                if target_assessment_id:
+                    target_assessment = Assessment.objects.filter(id=target_assessment_id).first()
+                if not target_assessment and college_obj:
+                    open_assigned = college_obj.assigned_assessments.filter(status=Assessment.Status.OPEN)
+                    if open_assigned.count() == 1:
+                        target_assessment = open_assigned.first()
 
-                # Verify if active attempt is actually still eligible (not expired)
+                # Check for active in-progress attempt
+                attempt_qs = existing_candidate.attempts.all()
+                if target_assessment:
+                    active_attempt = attempt_qs.filter(
+                        assessment=target_assessment,
+                        state__in=[AssessmentAttempt.State.CREATED, AssessmentAttempt.State.IN_PROGRESS],
+                    ).order_by("-created_at").first()
+                else:
+                    active_attempt = attempt_qs.filter(
+                        state__in=[AssessmentAttempt.State.CREATED, AssessmentAttempt.State.IN_PROGRESS],
+                    ).order_by("-created_at").first()
+
                 if active_attempt and active_attempt.is_expired():
                     finalize_assessment_attempt(active_attempt, final_state=AssessmentAttempt.State.TIMED_OUT)
                     active_attempt = None
 
-                completed = existing_candidate.attempts.filter(
-                    state__in=[
-                        AssessmentAttempt.State.SUBMITTED,
-                        AssessmentAttempt.State.TIMED_OUT,
-                        AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
-                    ]
-                ).order_by("-created_at").first()
+                # Check completed attempts against attempt limit
+                if target_assessment:
+                    completed_attempts = attempt_qs.filter(
+                        assessment=target_assessment,
+                        state__in=[
+                            AssessmentAttempt.State.SUBMITTED,
+                            AssessmentAttempt.State.TIMED_OUT,
+                            AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+                        ],
+                    )
+                    already_completed = completed_attempts.count() >= target_assessment.max_attempts
+                    last_completed = completed_attempts.order_by("-created_at").first()
+                else:
+                    open_assigned = college_obj.assigned_assessments.filter(status=Assessment.Status.OPEN) if college_obj else Assessment.objects.none()
+                    if open_assigned.exists():
+                        eligible_for_any = False
+                        for a in open_assigned:
+                            done_count = attempt_qs.filter(
+                                assessment=a,
+                                state__in=[
+                                    AssessmentAttempt.State.SUBMITTED,
+                                    AssessmentAttempt.State.TIMED_OUT,
+                                    AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+                                ],
+                            ).count()
+                            if done_count < a.max_attempts:
+                                eligible_for_any = True
+                                break
+                        already_completed = not eligible_for_any
+                        last_completed = attempt_qs.filter(
+                            state__in=[
+                                AssessmentAttempt.State.SUBMITTED,
+                                AssessmentAttempt.State.TIMED_OUT,
+                                AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+                            ]
+                        ).order_by("-created_at").first()
+                    else:
+                        completed_attempts = attempt_qs.filter(
+                            state__in=[
+                                AssessmentAttempt.State.SUBMITTED,
+                                AssessmentAttempt.State.TIMED_OUT,
+                                AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+                            ]
+                        )
+                        already_completed = completed_attempts.exists()
+                        last_completed = completed_attempts.order_by("-created_at").first()
+
+                if active_attempt:
+                    registration_status = "IN_PROGRESS"
+                elif already_completed:
+                    registration_status = "COMPLETED"
+                else:
+                    registration_status = "NOT_STARTED"
 
                 token = generate_candidate_token(
                     str(existing_candidate.id),
-                    str(active_attempt.id if active_attempt else (completed.id if completed else None)),
+                    str(active_attempt.id if active_attempt else (last_completed.id if (already_completed and last_completed) else None)),
                 )
 
                 remaining_secs = 0
@@ -238,29 +307,23 @@ class CandidateRegisterView(APIView):
                         "full_name": existing_candidate.full_name,
                         "college": existing_candidate.college,
                         "college_id": existing_candidate.college_ref_id,
+                        "registration_status": registration_status,
                         "is_active_attempt": bool(active_attempt),
-                        "already_completed": bool(completed and not active_attempt),
-                        "attempt_id": str(active_attempt.id if active_attempt else (completed.id if completed else "")),
-                        "attempt_state": active_attempt.state if active_attempt else (completed.state if completed else ""),
-                        "assessment_title": active_attempt.assessment.title if (active_attempt and active_attempt.assessment) else "Assessment",
-                        "assessment_code": active_attempt.assessment.code if (active_attempt and active_attempt.assessment) else "CSL",
+                        "already_completed": already_completed and not bool(active_attempt),
+                        "attempt_id": str(active_attempt.id if active_attempt else (last_completed.id if (already_completed and last_completed) else "")),
+                        "attempt_state": active_attempt.state if active_attempt else (last_completed.state if (already_completed and last_completed) else ""),
+                        "assessment_title": active_attempt.assessment.title if (active_attempt and active_attempt.assessment) else (last_completed.assessment.title if (already_completed and last_completed and last_completed.assessment) else "Assessment"),
+                        "assessment_code": active_attempt.assessment.code if (active_attempt and active_attempt.assessment) else (last_completed.assessment.code if (already_completed and last_completed and last_completed.assessment) else "CSL"),
                         "remaining_seconds": remaining_secs,
                         "message": (
                             "Welcome back. Active session found."
                             if active_attempt
-                            else ("Assessment already completed." if completed else "Candidate profile restored.")
+                            else ("Assessment already completed." if already_completed else "Registration verified. You may proceed to your assessment.")
                         ),
                     },
                     status=status.HTTP_200_OK,
                 )
             else:
-                # Check college + reg_no uniqueness
-                clash = Candidate.objects.filter(college_ref=college_obj, register_number=reg_no).first()
-                if clash:
-                    return Response(
-                        {"register_number": [f"Register number {reg_no} is already registered for {college_name}."]},
-                        status=status.HTTP_400_BAD_REQUEST,
-                    )
                 candidate = Candidate.objects.create(
                     full_name=data["full_name"],
                     register_number=reg_no,
@@ -282,7 +345,10 @@ class CandidateRegisterView(APIView):
                 "full_name": candidate.full_name,
                 "college": candidate.college,
                 "college_id": candidate.college_ref_id,
+                "registration_status": "NEW_REGISTRATION",
+                "is_active_attempt": False,
                 "already_completed": False,
+                "message": "Registration successful. You may proceed to your assessment.",
             },
             status=status.HTTP_201_CREATED,
         )
@@ -543,7 +609,7 @@ class FinalizeAssessmentView(APIView):
     """
     Step 6: Finalize assessment and calculate scores. Strict ownership check.
     """
-    authentication_classes = [CandidateAssessmentAuthentication]
+    authentication_classes = [CandidateAssessmentAuthentication, SessionAuthentication, BasicAuthentication]
     permission_classes = [AllowAny]
 
     def post(self, request, attempt_id):
@@ -564,7 +630,7 @@ class AssessmentResultView(APIView):
     """
     Step 7: View finalized result. Strict ownership check.
     """
-    authentication_classes = [CandidateAssessmentAuthentication]
+    authentication_classes = [CandidateAssessmentAuthentication, SessionAuthentication, BasicAuthentication]
     permission_classes = [AllowAny]
 
     def get(self, request, attempt_id):
