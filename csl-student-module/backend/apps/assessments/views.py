@@ -216,6 +216,12 @@ class CandidateRegisterView(APIView):
                 target_assessment_id = data.get("assessment_id")
                 if target_assessment_id:
                     target_assessment = Assessment.objects.filter(id=target_assessment_id).first()
+                    if target_assessment and college_obj:
+                        if not target_assessment.eligible_colleges.filter(id=college_obj.id).exists():
+                            return Response(
+                                {"detail": f"Your institution ({college_obj.name}) is not eligible for '{target_assessment.title}'."},
+                                status=status.HTTP_400_BAD_REQUEST,
+                            )
                 if not target_assessment and college_obj:
                     open_assigned = college_obj.assigned_assessments.filter(status=Assessment.Status.OPEN)
                     if open_assigned.count() == 1:
@@ -324,6 +330,15 @@ class CandidateRegisterView(APIView):
                     status=status.HTTP_200_OK,
                 )
             else:
+                target_assessment_id = data.get("assessment_id")
+                if target_assessment_id and college_obj:
+                    target_assessment = Assessment.objects.filter(id=target_assessment_id).first()
+                    if target_assessment and not target_assessment.eligible_colleges.filter(id=college_obj.id).exists():
+                        return Response(
+                            {"detail": f"Your institution ({college_obj.name}) is not eligible for '{target_assessment.title}'."},
+                            status=status.HTTP_400_BAD_REQUEST,
+                        )
+
                 candidate = Candidate.objects.create(
                     full_name=data["full_name"],
                     register_number=reg_no,

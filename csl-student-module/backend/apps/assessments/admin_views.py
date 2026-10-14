@@ -479,17 +479,41 @@ class AdminAssessmentArchiveView(APIView):
 class AdminAssessmentAssignCollegesView(APIView):
     permission_classes = [IsCSLAdminUser]
 
+    def get(self, request, pk):
+        assessment = get_object_or_404(Assessment, pk=pk)
+        colleges = College.objects.filter(is_active=True).order_by("name")
+        assigned_ids = list(assessment.eligible_colleges.values_list("id", flat=True))
+        return Response({
+            "assessment_id": str(assessment.id),
+            "assessment_title": assessment.title,
+            "assessment_status": assessment.status,
+            "assigned_college_ids": assigned_ids,
+            "colleges": [
+                {
+                    "id": c.id,
+                    "name": c.name,
+                    "code": c.code,
+                    "is_assigned": c.id in assigned_ids,
+                }
+                for c in colleges
+            ],
+        })
+
     def post(self, request, pk):
         assessment = get_object_or_404(Assessment, pk=pk)
         college_ids = request.data.get("college_ids", [])
         if not isinstance(college_ids, list):
             return Response({"detail": "college_ids must be a list of IDs."}, status=status.HTTP_400_BAD_REQUEST)
 
-        updated = assign_colleges_to_assessment(assessment, college_ids, user=request.user)
-        return Response({
-            "message": f"Assigned {updated.eligible_colleges.count()} institution(s) to '{assessment.title}'.",
-            "eligible_colleges": [{"id": c.id, "name": c.name, "code": c.code} for c in updated.eligible_colleges.all()],
-        })
+        try:
+            updated = assign_colleges_to_assessment(assessment, college_ids, user=request.user)
+            return Response({
+                "message": f"Successfully updated college assignments for '{updated.title}' ({updated.eligible_colleges.count()} institution(s) enrolled).",
+                "eligible_colleges": [{"id": c.id, "name": c.name, "code": c.code} for c in updated.eligible_colleges.all()],
+                "assessment": AdminAssessmentDetailSerializer(updated).data,
+            })
+        except Exception as e:
+            return format_validation_error_response(e)
 
 
 class AdminAssessmentAuditLogsView(APIView):

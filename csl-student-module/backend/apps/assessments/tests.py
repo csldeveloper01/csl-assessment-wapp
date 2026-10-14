@@ -753,6 +753,200 @@ class CSLAdminPanelAPITests(TestCase):
         self.assertEqual(res_list.status_code, 200)
         self.assertTrue(any(item["id"] == q_id for item in res_list.data))
 
+    def test_admin_assign_and_update_colleges_on_existing_assessment(self):
+        """
+        Verify administrators can inspect, add, and remove eligible colleges on an existing assessment.
+        """
+        self.client.force_login(self.admin_user)
+        col_a = College.objects.create(name="Alpha Institute", code="ALPHA")
+        col_b = College.objects.create(name="Beta Engineering College", code="BETA")
+
+        assessment = Assessment.objects.create(
+            code="TST-COL-01",
+            title="Institutional Eligibility Assessment",
+            duration_minutes=45,
+            total_marks=20,
+            status=Assessment.Status.DRAFT,
+        )
+        assessment.eligible_colleges.add(col_a)
+
+        # 1. GET college assignments endpoint
+        url = f"/api/csl-admin/assessments/{assessment.id}/assign-colleges/"
+        res_get = self.client.get(url)
+        self.assertEqual(res_get.status_code, 200)
+        self.assertEqual(res_get.data["assessment_id"], str(assessment.id))
+        self.assertIn(col_a.id, res_get.data["assigned_college_ids"])
+
+        # 2. Add College B (assign A and B)
+        payload_add = {"college_ids": [col_a.id, col_b.id]}
+        res_post_add = self.client.post(url, payload_add, content_type="application/json")
+        self.assertEqual(res_post_add.status_code, 200)
+        self.assertEqual(len(res_post_add.data["eligible_colleges"]), 2)
+
+        assessment.refresh_from_db()
+        self.assertEqual(assessment.eligible_colleges.count(), 2)
+        self.assertTrue(assessment.eligible_colleges.filter(id=col_a.id).exists())
+        self.assertTrue(assessment.eligible_colleges.filter(id=col_b.id).exists())
+
+        # 3. Remove College A (keep only College B)
+        payload_remove = {"college_ids": [col_b.id]}
+        res_post_rem = self.client.post(url, payload_remove, content_type="application/json")
+        self.assertEqual(res_post_rem.status_code, 200)
+        self.assertEqual(len(res_post_rem.data["eligible_colleges"]), 1)
+
+        assessment.refresh_from_db()
+        self.assertEqual(assessment.eligible_colleges.count(), 1)
+        self.assertFalse(assessment.eligible_colleges.filter(id=col_a.id).exists())
+        self.assertTrue(assessment.eligible_colleges.filter(id=col_b.id).exists())
+
+    def test_college_eligibility_enforcement_for_student_registration_and_start(self):
+        """
+        Verify student registration and start endpoints strictly enforce updated college assignments:
+        - Candidates from newly assigned colleges can register and start.
+        - Candidates from unassigned or removed colleges are denied.
+        """
+        col_enrolled = College.objects.create(name="Enrolled Institute", code="ENROLLED")
+        col_removed = College.objects.create(name="Removed Institute", code="REMOVED")
+
+        # Create OPEN assessment with enrolled college and sufficient questions
+        assessment = Assessment.objects.create(
+            code="TST-ELIG-01",
+            title="Active Eligibility Test",
+            duration_minutes=30,
+            total_marks=2,
+            aptitude_count=1,
+            coding_count=1,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(col_enrolled)
+
+        q_apt = QuestionBank.objects.create(
+            prompt="Aptitude sample question",
+            section_type="APTITUDE",
+            difficulty="EASY",
+            option_a="1",
+            option_b="2",
+            option_c="3",
+            option_d="4",
+            correct_option="A",
+            is_active=True,
+        )
+        q_cod = QuestionBank.objects.create(
+            prompt="Coding sample question",
+            section_type="CODING",
+            difficulty="EASY",
+            option_a="1",
+            option_b="2",
+            option_c="3",
+            option_d="4",
+            correct_option="B",
+            is_active=True,
+        )
+        assessment.questions.add(q_apt, q_cod)
+
+        # 1. Candidate from removed / unassigned college attempts registration for this assessment
+        reg_payload_removed = {
+            "full_name": "Student Removed",
+            "register_number": "REG-REM-01",
+            "email": "student.removed@example.com",
+            "college_id": col_removed.id,
+            "department": "Computer Science",
+            "year_of_study": "3rd Year",
+            "phone_number": "9876543210",
+            "assessment_id": str(assessment.id),
+        }
+        res_reg_rem = self.client.post("/api/assessment/register/", reg_payload_removed, content_type="application/json")
+        self.assertEqual(res_reg_rem.status_code, 400)
+        self.assertIn("not eligible", res_reg_rem.data.get("detail", ""))
+
+        # 2. Candidate from enrolled college registers successfully
+        reg_payload_enrolled = {
+            "full_name": "Student Enrolled",
+            "register_number": "REG-ENR-01",
+            "email": "student.enrolled@example.com",
+            "college_id": col_enrolled.id,
+            "department": "Computer Science",
+            "year_of_study": "3rd Year",
+            "phone_number": "9876543211",
+            "assessment_id": str(assessment.id),
+        }
+        res_reg_enr = self.client.post("/api/assessment/register/", reg_payload_enrolled, content_type="application/json")
+        self.assertEqual(res_reg_enr.status_code, 201)
+        token_enr = res_reg_enr.data["assessment_token"]
+
+        # 3. Candidate from enrolled college starts assessment successfully
+        res_start = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_X_ASSESSMENT_TOKEN=token_enr,
+        )
+        self.assertEqual(res_start.status_code, 200)
+        self.assertEqual(res_start.data["state"], "IN_PROGRESS")
+
+    def test_college_assignment_preserves_historical_data_and_enforces_lifecycle(self):
+        """
+        Verify historical attempt data is preserved when college assignments change,
+        and lifecycle rules prevent invalid states (e.g. archived assessment, empty open assessment).
+        """
+        self.client.force_login(self.admin_user)
+        col = College.objects.create(name="Heritage College", code="HERITAGE")
+        col_new = College.objects.create(name="New College", code="NEWCOL")
+
+        assessment = Assessment.objects.create(
+            code="TST-HIST-01",
+            title="Historical Data Integrity Assessment",
+            duration_minutes=30,
+            total_marks=2,
+            aptitude_count=1,
+            coding_count=1,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(col)
+
+        cand = Candidate.objects.create(
+            full_name="History Candidate",
+            register_number="HIST-001",
+            email="history@csl.com",
+            college_ref=col,
+            college=col.name,
+        )
+        attempt = AssessmentAttempt.objects.create(
+            candidate=cand,
+            assessment=assessment,
+            config=self.config,
+            state=AssessmentAttempt.State.SUBMITTED,
+            started_at=timezone.now() - timedelta(minutes=20),
+            submitted_at=timezone.now(),
+            total_score=2,
+            percentage=100.0,
+        )
+
+        url = f"/api/csl-admin/assessments/{assessment.id}/assign-colleges/"
+
+        # 1. Update colleges to replace col with col_new
+        res = self.client.post(url, {"college_ids": [col_new.id]}, content_type="application/json")
+        self.assertEqual(res.status_code, 200)
+
+        # Confirm historical data is preserved
+        attempt.refresh_from_db()
+        self.assertEqual(attempt.state, AssessmentAttempt.State.SUBMITTED)
+        self.assertEqual(attempt.total_score, 2)
+        self.assertEqual(attempt.candidate.college_ref, col)
+        self.assertEqual(AssessmentAttempt.objects.filter(assessment=assessment).count(), 1)
+
+        # 2. Lifecycle: Cannot remove all colleges from an OPEN assessment
+        res_empty = self.client.post(url, {"college_ids": []}, content_type="application/json")
+        self.assertEqual(res_empty.status_code, 400)
+        self.assertIn("must have at least one eligible college", res_empty.data.get("detail", ""))
+
+        # 3. Lifecycle: Cannot modify college assignments on an ARCHIVED assessment
+        assessment.status = Assessment.Status.ARCHIVED
+        assessment.save(update_fields=["status"])
+        res_arch = self.client.post(url, {"college_ids": [col.id]}, content_type="application/json")
+        self.assertEqual(res_arch.status_code, 400)
+        self.assertIn("archived", res_arch.data.get("detail", "").lower())
+
     def test_admin_config_update_validation(self):
         self.client.force_login(self.admin_user)
         # Invalid platform-wide config (max_attempts < 1, max_tab_switches < 1)

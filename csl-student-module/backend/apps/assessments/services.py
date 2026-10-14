@@ -347,8 +347,22 @@ def archive_assessment(assessment: Assessment, user=None):
 def assign_colleges_to_assessment(assessment: Assessment, college_ids: list, user=None):
     """
     Updates the list of colleges eligible for this assessment.
+    Enforces lifecycle rules:
+    - ARCHIVED assessments cannot have college assignments modified.
+    - READY, SCHEDULED, and OPEN assessments must have at least one eligible college assigned.
     """
-    colleges = list(College.objects.filter(id__in=college_ids))
+    if assessment.status == Assessment.Status.ARCHIVED:
+        raise ValidationError({"detail": f"Cannot modify college assignments for archived assessment '{assessment.title}'. Please unarchive it first."})
+
+    colleges = list(College.objects.filter(id__in=college_ids, is_active=True))
+    if len(colleges) == 0 and assessment.status in [Assessment.Status.READY, Assessment.Status.SCHEDULED, Assessment.Status.OPEN]:
+        raise ValidationError({"detail": f"Assessment in {assessment.status} status must have at least one eligible college assigned."})
+
+    previous_ids = list(assessment.eligible_colleges.values_list("id", flat=True))
+    new_ids = [c.id for c in colleges]
+    added_ids = [cid for cid in new_ids if cid not in previous_ids]
+    removed_ids = [cid for cid in previous_ids if cid not in new_ids]
+
     assessment.eligible_colleges.set(colleges)
     assessment.save(update_fields=["updated_at"])
 
@@ -358,8 +372,10 @@ def assign_colleges_to_assessment(assessment: Assessment, college_ids: list, use
         entity_id=str(assessment.id),
         user=user,
         details={
-            "assigned_college_ids": [c.id for c in colleges],
+            "assigned_college_ids": new_ids,
             "assigned_college_codes": [c.code for c in colleges],
+            "added_college_ids": added_ids,
+            "removed_college_ids": removed_ids,
         },
     )
     return assessment

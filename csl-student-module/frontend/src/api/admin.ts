@@ -429,7 +429,25 @@ export async function archiveAdminAssessment(id: string): Promise<{ message: str
   return res.data;
 }
 
-export async function assignAdminAssessmentColleges(id: string, collegeIds: number[]): Promise<{ message: string; eligible_colleges: { id: number; name: string; code: string }[] }> {
+export async function getAdminAssessmentColleges(id: string): Promise<{
+  assessment_id: string;
+  assessment_title: string;
+  assessment_status: string;
+  assigned_college_ids: number[];
+  colleges: { id: number; name: string; code: string; is_assigned: boolean }[];
+}> {
+  const res = await adminApi.get(`/assessments/${id}/assign-colleges/`);
+  return res.data;
+}
+
+export async function assignAdminAssessmentColleges(
+  id: string,
+  collegeIds: number[]
+): Promise<{
+  message: string;
+  eligible_colleges: { id: number; name: string; code: string }[];
+  assessment?: AdminAssessmentDetail;
+}> {
   const res = await adminApi.post(`/assessments/${id}/assign-colleges/`, { college_ids: collegeIds });
   return res.data;
 }

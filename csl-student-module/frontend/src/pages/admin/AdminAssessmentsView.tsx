@@ -73,6 +73,8 @@ export function AdminAssessmentsView({
   const [detailTab, setDetailTab] = useState<'overview' | 'colleges' | 'audit'>('overview');
   const [selectedCollegeIdsForAssign, setSelectedCollegeIdsForAssign] = useState<number[]>([]);
   const [savingColleges, setSavingColleges] = useState(false);
+  const [collegeAssignError, setCollegeAssignError] = useState<string | null>(null);
+  const [collegeSearchQuery, setCollegeSearchQuery] = useState('');
 
   // Dynamic Section Allocation states for Create & Edit
   const [createSections, setCreateSections] = useState<AssessmentSectionDraft[]>([]);
@@ -148,7 +150,10 @@ export function AdminAssessmentsView({
     fetchSections();
   }, [search, statusFilter]);
 
-  const handleOpenDetail = async (assessmentOrId: AdminAssessment | string) => {
+  const handleOpenDetail = async (
+    assessmentOrId: AdminAssessment | string,
+    initialTab: 'overview' | 'colleges' | 'audit' = 'overview'
+  ) => {
     const assessmentId = typeof assessmentOrId === 'string' ? assessmentOrId : assessmentOrId.id;
     if (!assessmentId) return;
 
@@ -169,7 +174,9 @@ export function AdminAssessmentsView({
       if (match) setSelectedAssessment(match);
     }
 
-    setDetailTab('overview');
+    setDetailTab(initialTab);
+    setCollegeAssignError(null);
+    setCollegeSearchQuery('');
     setShowDetailModal(true);
     setLoadingDetail(true);
     setDetailError(null);
@@ -211,6 +218,8 @@ export function AdminAssessmentsView({
     setSelectedAssessment(null);
     setAssessmentDetail(null);
     setDetailError(null);
+    setCollegeAssignError(null);
+    setCollegeSearchQuery('');
     if (onClearAssessmentId) {
       onClearAssessmentId();
     }
@@ -306,13 +315,25 @@ export function AdminAssessmentsView({
   const handleSaveColleges = async () => {
     if (!assessmentDetail) return;
     setSavingColleges(true);
+    setCollegeAssignError(null);
     try {
       const res = await assignAdminAssessmentColleges(assessmentDetail.id, selectedCollegeIdsForAssign);
-      setActionMessage({ text: res.message, type: 'success' });
+      setActionMessage({ text: res.message || 'College assignments saved successfully.', type: 'success' });
+      if (res.assessment) {
+        setAssessmentDetail(res.assessment);
+        setSelectedAssessment(res.assessment);
+      } else {
+        const freshDetail = await getAdminAssessmentDetail(assessmentDetail.id);
+        setAssessmentDetail(freshDetail);
+        setSelectedAssessment(freshDetail);
+      }
+      const updatedColleges = res.eligible_colleges || [];
+      setSelectedCollegeIdsForAssign(updatedColleges.map((c) => c.id));
       fetchAssessments();
-      handleOpenDetail(assessmentDetail);
     } catch (err: any) {
-      setActionMessage({ text: formatApiError(err, 'Failed to assign colleges.'), type: 'error' });
+      const errFormatted = formatApiError(err, 'Failed to assign colleges.');
+      setCollegeAssignError(errFormatted);
+      setActionMessage({ text: errFormatted, type: 'error' });
     } finally {
       setSavingColleges(false);
     }
@@ -843,18 +864,28 @@ export function AdminAssessmentsView({
                     </div>
                   </td>
                   <td style={{ padding: '14px 16px', textAlign: 'center' }}>
-                    <span
+                    <button
+                      type="button"
+                      onClick={() => handleOpenDetail(a, 'colleges')}
+                      title="Click to edit college assignments for this assessment"
                       style={{
                         backgroundColor: a.eligible_colleges_count > 0 ? '#F0F9FF' : '#FEF2F2',
                         color: a.eligible_colleges_count > 0 ? '#0369A1' : '#B91C1C',
+                        border: '1px solid',
+                        borderColor: a.eligible_colleges_count > 0 ? '#BAE6FD' : '#FECACA',
                         fontWeight: 700,
                         fontSize: '12px',
                         padding: '4px 8px',
                         borderRadius: '6px',
+                        cursor: 'pointer',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '4px',
                       }}
                     >
-                      {a.eligible_colleges_count} colleges
-                    </span>
+                      <span>{a.eligible_colleges_count} colleges</span>
+                      <span style={{ fontSize: '11px', opacity: 0.8 }}>✎</span>
+                    </button>
                   </td>
                   <td style={{ padding: '14px 16px', textAlign: 'center' }}>
                     <div style={{ fontWeight: 700, color: '#0B2E6F' }}>{a.attempts_count}</div>
@@ -977,6 +1008,23 @@ export function AdminAssessmentsView({
                         }}
                       >
                         Edit
+                      </button>
+
+                      <button
+                        onClick={() => handleOpenDetail(a, 'colleges')}
+                        title="Edit College Assignment"
+                        style={{
+                          backgroundColor: '#EFF6FF',
+                          color: '#1D4ED8',
+                          border: '1px solid #BFDBFE',
+                          padding: '6px 12px',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Colleges
                       </button>
 
                       <button
@@ -2139,6 +2187,22 @@ export function AdminAssessmentsView({
                           )}
                           <button
                             type="button"
+                            onClick={() => setDetailTab('colleges')}
+                            style={{
+                              backgroundColor: '#EFF6FF',
+                              color: '#1D4ED8',
+                              border: '1px solid #BFDBFE',
+                              padding: '4px 10px',
+                              borderRadius: '5px',
+                              fontSize: '12px',
+                              fontWeight: 700,
+                              cursor: 'pointer',
+                            }}
+                          >
+                            🏛 Edit College Assignment ({assessmentDetail.eligible_colleges_count ?? 0})
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => {
                               setShowDetailModal(false);
                               handleOpenEdit(assessmentDetail);
@@ -2177,6 +2241,54 @@ export function AdminAssessmentsView({
                       </div>
                     </div>
 
+                    {/* Eligible Institutions Overview Card */}
+                    <div style={{ backgroundColor: '#F8FAFC', padding: '14px', borderRadius: '8px', border: '1px solid #E2E8F0', marginBottom: '16px', fontSize: '13px' }}>
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '6px' }}>
+                        <div style={{ fontWeight: 700, color: '#334155' }}>
+                          Eligible Institutions ({Array.isArray(assessmentDetail.eligible_colleges) ? assessmentDetail.eligible_colleges.length : (assessmentDetail.eligible_colleges_count || 0)})
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setDetailTab('colleges')}
+                          style={{
+                            background: 'none',
+                            border: 'none',
+                            color: '#1D4ED8',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                            textDecoration: 'underline',
+                          }}
+                        >
+                          Edit College Assignments →
+                        </button>
+                      </div>
+                      {Array.isArray(assessmentDetail.eligible_colleges) && assessmentDetail.eligible_colleges.length > 0 ? (
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                          {assessmentDetail.eligible_colleges.map((col) => (
+                            <span
+                              key={col.id}
+                              style={{
+                                backgroundColor: '#EFF6FF',
+                                color: '#1E40AF',
+                                border: '1px solid #DBEAFE',
+                                padding: '3px 8px',
+                                borderRadius: '4px',
+                                fontSize: '12px',
+                                fontWeight: 600,
+                              }}
+                            >
+                              <strong>{col.code}</strong> - {col.name}
+                            </span>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={{ color: '#DC2626', fontWeight: 600, fontSize: '12px' }}>
+                          ⚠ No colleges currently assigned. Candidates from unassigned institutions will not be eligible to register.
+                        </div>
+                      )}
+                    </div>
+
                     {/* Section Breakdown Card */}
                     {Array.isArray(assessmentDetail.sections) && assessmentDetail.sections.length > 0 ? (
                       <div style={{ backgroundColor: '#F8FAFC', padding: '14px', borderRadius: '8px', border: '1px solid #E2E8F0', fontSize: '13px' }}>
@@ -2208,50 +2320,318 @@ export function AdminAssessmentsView({
                 )}
 
                 {/* 2. ASSIGNED COLLEGES TAB */}
-                {detailTab === 'colleges' && (
-                  <div>
-                    <p style={{ fontSize: '13px', color: '#64748B', marginTop: 0, marginBottom: '14px' }}>
-                      Select which participating institutions are eligible to register candidates and take this assessment.
-                    </p>
-                    <div style={{ border: '1px solid #E2E8F0', borderRadius: '8px', padding: '12px', maxHeight: '240px', overflowY: 'auto', backgroundColor: '#F8FAFC', marginBottom: '16px' }}>
-                      {Array.isArray(colleges) && colleges.length > 0 ? (
-                        colleges.map((c) => {
-                          const isChecked = selectedCollegeIdsForAssign.includes(c.id);
-                          return (
-                            <label key={c.id} style={{ display: 'flex', alignItems: 'center', gap: '10px', padding: '6px 4px', fontSize: '13px', cursor: 'pointer', borderBottom: '1px solid #F1F5F9' }}>
-                              <input
-                                type="checkbox"
-                                checked={isChecked}
-                                onChange={(e) => {
-                                  if (e.target.checked) {
-                                    setSelectedCollegeIdsForAssign([...selectedCollegeIdsForAssign, c.id]);
-                                  } else {
-                                    setSelectedCollegeIdsForAssign(selectedCollegeIdsForAssign.filter((id) => id !== c.id));
-                                  }
-                                }}
-                              />
-                              <span style={{ fontWeight: 700, color: '#3730A3', backgroundColor: '#EEF2FF', padding: '2px 6px', borderRadius: '4px', fontSize: '11px' }}>{c.code}</span>
-                              <span>{c.name}</span>
-                              <span style={{ marginLeft: 'auto', color: '#64748B', fontSize: '12px' }}>{c.candidates_count || 0} students</span>
-                            </label>
-                          );
-                        })
-                      ) : (
-                        <div style={{ padding: '16px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>
-                          No institutions available.
+                {detailTab === 'colleges' && (() => {
+                  const isArchived = assessmentDetail.status === 'ARCHIVED';
+                  const isOpenState = assessmentDetail.status === 'OPEN';
+                  const currentlySavedIds = Array.isArray(assessmentDetail.eligible_colleges)
+                    ? assessmentDetail.eligible_colleges.map((c) => c.id)
+                    : [];
+
+                  const filteredColleges = Array.isArray(colleges)
+                    ? colleges.filter((c) => {
+                        if (!collegeSearchQuery.trim()) return true;
+                        const query = collegeSearchQuery.trim().toLowerCase();
+                        return c.name.toLowerCase().includes(query) || c.code.toLowerCase().includes(query);
+                      })
+                    : [];
+
+                  const assignedCount = selectedCollegeIdsForAssign.length;
+                  const totalCount = Array.isArray(colleges) ? colleges.length : 0;
+
+                  return (
+                    <div>
+                      {/* Lifecycle Alert Banners */}
+                      {isArchived && (
+                        <div
+                          style={{
+                            padding: '10px 14px',
+                            backgroundColor: '#FEF2F2',
+                            color: '#991B1B',
+                            borderRadius: '8px',
+                            border: '1px solid #FCA5A5',
+                            marginBottom: '14px',
+                            fontSize: '13px',
+                            fontWeight: 500,
+                          }}
+                        >
+                          <strong>Archived Assessment:</strong> College assignments cannot be modified while an assessment is archived. Please unarchive it first to adjust institutional eligibility.
                         </div>
                       )}
+
+                      {isOpenState && (
+                        <div
+                          style={{
+                            padding: '10px 14px',
+                            backgroundColor: '#EFF6FF',
+                            color: '#1E40AF',
+                            borderRadius: '8px',
+                            border: '1px solid #BFDBFE',
+                            marginBottom: '14px',
+                            fontSize: '13px',
+                            fontWeight: 500,
+                          }}
+                        >
+                          <strong>Active Assessment:</strong> This assessment is currently OPEN. Newly added colleges will be able to register candidates immediately. Removed colleges will be prevented from registering, while existing candidates, attempts, and submitted answers are safely preserved.
+                        </div>
+                      )}
+
+                      {collegeAssignError && (
+                        <div
+                          style={{
+                            padding: '10px 14px',
+                            backgroundColor: '#FEF2F2',
+                            color: '#991B1B',
+                            borderRadius: '8px',
+                            border: '1px solid #FCA5A5',
+                            marginBottom: '14px',
+                            fontSize: '13px',
+                          }}
+                        >
+                          <strong>Error updating assignments:</strong> {collegeAssignError}
+                        </div>
+                      )}
+
+                      {/* Header and Summary Statistics */}
+                      <div
+                        style={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          alignItems: 'center',
+                          flexWrap: 'wrap',
+                          gap: '12px',
+                          marginBottom: '12px',
+                        }}
+                      >
+                        <div>
+                          <div style={{ fontSize: '13px', color: '#475569' }}>
+                            Select participating institutions eligible to register candidates for <strong>{assessmentDetail.title}</strong>.
+                          </div>
+                          <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                            Currently Enrolled: <strong>{currentlySavedIds.length}</strong> | Selected for Assignment: <strong>{assignedCount}</strong> | Total Available: <strong>{totalCount}</strong>
+                          </div>
+                        </div>
+
+                        {!isArchived && (
+                          <div style={{ display: 'flex', gap: '8px' }}>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const allIds = filteredColleges.map((c) => c.id);
+                                setSelectedCollegeIdsForAssign(Array.from(new Set([...selectedCollegeIdsForAssign, ...allIds])));
+                              }}
+                              style={{
+                                padding: '5px 10px',
+                                backgroundColor: '#F1F5F9',
+                                color: '#0B2E6F',
+                                border: '1px solid #CBD5E1',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Select All
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedCollegeIdsForAssign([])}
+                              style={{
+                                padding: '5px 10px',
+                                backgroundColor: '#F1F5F9',
+                                color: '#475569',
+                                border: '1px solid #CBD5E1',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Deselect All
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setSelectedCollegeIdsForAssign(currentlySavedIds)}
+                              style={{
+                                padding: '5px 10px',
+                                backgroundColor: '#F1F5F9',
+                                color: '#475569',
+                                border: '1px solid #CBD5E1',
+                                borderRadius: '6px',
+                                fontSize: '12px',
+                                fontWeight: 600,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              Reset to Saved
+                            </button>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Search Filter Input */}
+                      <div style={{ marginBottom: '12px' }}>
+                        <input
+                          type="text"
+                          placeholder="Search institutions by name or code..."
+                          value={collegeSearchQuery}
+                          onChange={(e) => setCollegeSearchQuery(e.target.value)}
+                          style={{
+                            width: '100%',
+                            padding: '8px 12px',
+                            border: '1px solid #CBD5E1',
+                            borderRadius: '6px',
+                            fontSize: '13px',
+                            boxSizing: 'border-box',
+                          }}
+                        />
+                      </div>
+
+                      {/* College Checkbox List */}
+                      <div
+                        style={{
+                          border: '1px solid #E2E8F0',
+                          borderRadius: '8px',
+                          padding: '10px 14px',
+                          maxHeight: '280px',
+                          overflowY: 'auto',
+                          backgroundColor: '#F8FAFC',
+                          marginBottom: '16px',
+                        }}
+                      >
+                        {filteredColleges.length > 0 ? (
+                          filteredColleges.map((c) => {
+                            const isChecked = selectedCollegeIdsForAssign.includes(c.id);
+                            const wasSaved = currentlySavedIds.includes(c.id);
+
+                            let statusBadge = (
+                              <span style={{ fontSize: '11px', color: '#64748B', backgroundColor: '#F1F5F9', padding: '2px 6px', borderRadius: '4px' }}>
+                                Not Assigned
+                              </span>
+                            );
+
+                            if (wasSaved && isChecked) {
+                              statusBadge = (
+                                <span style={{ fontSize: '11px', color: '#15803D', backgroundColor: '#DCFCE7', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                                  ✓ Currently Assigned
+                                </span>
+                              );
+                            } else if (!wasSaved && isChecked) {
+                              statusBadge = (
+                                <span style={{ fontSize: '11px', color: '#1D4ED8', backgroundColor: '#DBEAFE', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                                  + Will Be Assigned
+                                </span>
+                              );
+                            } else if (wasSaved && !isChecked) {
+                              statusBadge = (
+                                <span style={{ fontSize: '11px', color: '#B91C1C', backgroundColor: '#FEE2E2', padding: '2px 6px', borderRadius: '4px', fontWeight: 600 }}>
+                                  − Will Be Removed
+                                </span>
+                              );
+                            }
+
+                            return (
+                              <label
+                                key={c.id}
+                                style={{
+                                  display: 'flex',
+                                  alignItems: 'center',
+                                  gap: '10px',
+                                  padding: '8px 6px',
+                                  fontSize: '13px',
+                                  cursor: isArchived ? 'not-allowed' : 'pointer',
+                                  borderBottom: '1px solid #F1F5F9',
+                                  backgroundColor: isChecked ? '#F0F9FF' : 'transparent',
+                                  borderRadius: '4px',
+                                  marginBottom: '2px',
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  checked={isChecked}
+                                  disabled={isArchived || savingColleges}
+                                  onChange={(e) => {
+                                    if (e.target.checked) {
+                                      setSelectedCollegeIdsForAssign([...selectedCollegeIdsForAssign, c.id]);
+                                    } else {
+                                      setSelectedCollegeIdsForAssign(selectedCollegeIdsForAssign.filter((id) => id !== c.id));
+                                    }
+                                  }}
+                                  style={{ cursor: isArchived ? 'not-allowed' : 'pointer' }}
+                                />
+                                <span
+                                  style={{
+                                    fontWeight: 700,
+                                    color: '#3730A3',
+                                    backgroundColor: '#EEF2FF',
+                                    padding: '2px 6px',
+                                    borderRadius: '4px',
+                                    fontSize: '11px',
+                                  }}
+                                >
+                                  {c.code}
+                                </span>
+                                <span style={{ fontWeight: isChecked ? 600 : 400, color: '#0F172A' }}>
+                                  {c.name}
+                                </span>
+                                <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                  <span style={{ color: '#64748B', fontSize: '12px' }}>
+                                    {c.candidates_count || 0} students
+                                  </span>
+                                  {statusBadge}
+                                </div>
+                              </label>
+                            );
+                          })
+                        ) : (
+                          <div style={{ padding: '20px', textAlign: 'center', color: '#94A3B8', fontSize: '13px' }}>
+                            {collegeSearchQuery ? `No institutions match "${collegeSearchQuery}".` : 'No institutions available.'}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Footer Actions */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                        <button
+                          type="button"
+                          disabled={savingColleges || isArchived}
+                          onClick={handleSaveColleges}
+                          style={{
+                            backgroundColor: isArchived ? '#94A3B8' : '#0B2E6F',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            borderRadius: '6px',
+                            padding: '9px 20px',
+                            fontWeight: 700,
+                            fontSize: '13px',
+                            cursor: isArchived || savingColleges ? 'not-allowed' : 'pointer',
+                          }}
+                        >
+                          {savingColleges ? 'Saving Assignments...' : 'Save College Assignments'}
+                        </button>
+                        <button
+                          type="button"
+                          disabled={savingColleges}
+                          onClick={() => {
+                            setSelectedCollegeIdsForAssign(currentlySavedIds);
+                            setCollegeAssignError(null);
+                          }}
+                          style={{
+                            backgroundColor: '#FFFFFF',
+                            color: '#475569',
+                            border: '1px solid #CBD5E1',
+                            borderRadius: '6px',
+                            padding: '8px 16px',
+                            fontWeight: 600,
+                            fontSize: '13px',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Cancel / Revert Changes
+                        </button>
+                      </div>
                     </div>
-                    <button
-                      type="button"
-                      disabled={savingColleges}
-                      onClick={handleSaveColleges}
-                      style={{ backgroundColor: '#0B2E6F', color: '#FFFFFF', border: 'none', borderRadius: '6px', padding: '8px 18px', fontWeight: 700, fontSize: '13px', cursor: 'pointer' }}
-                    >
-                      {savingColleges ? 'Updating Enrollment...' : 'Save College Assignments'}
-                    </button>
-                  </div>
-                )}
+                  );
+                })()}
 
                 {/* 3. AUDIT TRAIL TAB */}
                 {detailTab === 'audit' && (
