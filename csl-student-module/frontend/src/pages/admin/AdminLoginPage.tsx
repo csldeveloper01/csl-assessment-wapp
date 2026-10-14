@@ -159,7 +159,7 @@ export function AdminLoginPage({ onLoginSuccess }: AdminLoginPageProps) {
               required
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="admin@csl.com or csldeveloper01@gmail.com"
+              placeholder="Administrator Email"
               style={{
                 width: '100%',
                 padding: '11px 14px',
@@ -186,7 +186,7 @@ export function AdminLoginPage({ onLoginSuccess }: AdminLoginPageProps) {
               required
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="••••••••••••"
+              placeholder="Administrator Password"
               style={{
                 width: '100%',
                 padding: '11px 14px',
