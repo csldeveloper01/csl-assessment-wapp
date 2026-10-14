@@ -24,5 +24,9 @@ api.interceptors.request.use((config) => {
   if (csrfToken && config.headers) {
     config.headers['X-CSRFToken'] = csrfToken;
   }
+  const sessionKey = sessionStorage.getItem('csl_session_key') || localStorage.getItem('csl_session_key');
+  if (sessionKey && config.headers) {
+    config.headers['X-Session-ID'] = sessionKey;
+  }
   return config;
 });

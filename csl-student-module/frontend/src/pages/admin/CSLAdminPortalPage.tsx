@@ -99,6 +99,8 @@ export function CSLAdminPortalPage() {
         } else {
           try {
             sessionStorage.removeItem(CSL_ADMIN_TAB_AUTH_KEY);
+            sessionStorage.removeItem('csl_session_key');
+            localStorage.removeItem('csl_session_key');
           } catch {
             // ignore
           }
@@ -108,6 +110,8 @@ export function CSLAdminPortalPage() {
       .catch(() => {
         try {
           sessionStorage.removeItem(CSL_ADMIN_TAB_AUTH_KEY);
+          sessionStorage.removeItem('csl_session_key');
+          localStorage.removeItem('csl_session_key');
         } catch {
           // ignore
         }
@@ -135,6 +139,8 @@ export function CSLAdminPortalPage() {
     } finally {
       try {
         sessionStorage.removeItem(CSL_ADMIN_TAB_AUTH_KEY);
+        sessionStorage.removeItem('csl_session_key');
+        localStorage.removeItem('csl_session_key');
       } catch {
         // ignore
       }

@@ -196,9 +196,14 @@ else:
 
 CORS_ALLOW_CREDENTIALS = True  # required for session cookies
 
-# Explicitly extend default allowed headers with custom assessment token header
+# Explicitly extend default allowed headers with custom assessment token and session header
 CORS_ALLOW_HEADERS = list(default_headers) + [
     'x-assessment-token',
+    'x-session-id',
+]
+
+CORS_EXPOSE_HEADERS = [
+    'x-session-id',
 ]
 
 

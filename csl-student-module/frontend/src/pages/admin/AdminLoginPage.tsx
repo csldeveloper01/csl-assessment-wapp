@@ -16,6 +16,8 @@ export function AdminLoginPage({ onLoginSuccess }: AdminLoginPageProps) {
   useEffect(() => {
     try {
       sessionStorage.removeItem('csl_admin_tab_authenticated');
+      sessionStorage.removeItem('csl_session_key');
+      localStorage.removeItem('csl_session_key');
     } catch {
       // ignore
     }
@@ -28,16 +30,31 @@ export function AdminLoginPage({ onLoginSuccess }: AdminLoginPageProps) {
 
     try {
       // 1. Authenticate with session credentials
-      await api.post('/login/', {
-        email: email.trim().toLowerCase(),
+      const res = await api.post('/login/', {
+        email: email.trim(),
         password,
       });
+
+      if (res.data?.session_key) {
+        try {
+          sessionStorage.setItem('csl_session_key', res.data.session_key);
+          localStorage.setItem('csl_session_key', res.data.session_key);
+        } catch {
+          // ignore
+        }
+      }
 
       // 2. Verify admin role on dedicated administrative endpoint
       const adminInfo = await getAdminMe();
       if (!adminInfo.is_staff && !adminInfo.is_superuser && adminInfo.role !== 'ADMIN') {
         // Not authorized as admin
         await api.post('/logout/');
+        try {
+          sessionStorage.removeItem('csl_session_key');
+          localStorage.removeItem('csl_session_key');
+        } catch {
+          // ignore
+        }
         setError('Access denied: Your account does not have administrator privileges.');
         return;
       }

@@ -1,6 +1,13 @@
 from django.conf import settings
-from django.contrib.auth.models import AbstractUser
+from django.contrib.auth.models import AbstractUser, UserManager
 from django.db import models
+
+
+class CustomUserManager(UserManager):
+    def create_superuser(self, username, email=None, password=None, **extra_fields):
+        extra_fields.setdefault("role", User.Role.ADMIN)
+        extra_fields.setdefault("status", User.AccountStatus.ACTIVE)
+        return super().create_superuser(username, email, password, **extra_fields)
 
 
 class User(AbstractUser):
@@ -23,6 +30,16 @@ class User(AbstractUser):
     )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+
+    objects = CustomUserManager()
+
+    def save(self, *args, **kwargs):
+        if self.is_superuser or self.is_staff:
+            if self.role == self.Role.STUDENT:
+                self.role = self.Role.ADMIN
+            if self.status == self.AccountStatus.PENDING:
+                self.status = self.AccountStatus.ACTIVE
+        super().save(*args, **kwargs)
 
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["username"]
