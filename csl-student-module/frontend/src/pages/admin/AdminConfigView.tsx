@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { formatApiError } from '../../utils/errorFormatter';
 import {
   getAdminConfig,
   updateAdminConfig,
@@ -101,12 +102,7 @@ export function AdminConfigView() {
       setInitialConfig(updated);
       setMessage('Platform-wide configuration updated and persisted successfully.');
     } catch (err: unknown) {
-      if (typeof err === 'object' && err !== null && 'response' in err) {
-        const axErr = err as { response?: { data?: Record<string, string> } };
-        setError(JSON.stringify(axErr.response?.data || 'Failed to update configuration.'));
-      } else {
-        setError('Failed to update configuration.');
-      }
+      setError(formatApiError(err, 'Failed to update configuration.'));
     } finally {
       setSaving(false);
     }
@@ -167,8 +163,7 @@ export function AdminConfigView() {
       setSectionModalOpen(false);
       loadSections();
     } catch (err: any) {
-      const msg = err.response?.data?.code?.[0] || err.response?.data?.detail || 'Failed to save section.';
-      setSectionError(msg);
+      setSectionError(formatApiError(err, 'Failed to save section.'));
     } finally {
       setSectionSaving(false);
     }
@@ -187,7 +182,7 @@ export function AdminConfigView() {
       setSectionSuccess(res.message || `Section "${section.name}" deleted successfully.`);
       loadSections();
     } catch (err: any) {
-      const detailMsg = err.response?.data?.detail || err.message || 'Cannot delete section.';
+      const detailMsg = formatApiError(err, 'Cannot delete section.');
       alert(`Deletion Denied: ${detailMsg}`);
     }
   };

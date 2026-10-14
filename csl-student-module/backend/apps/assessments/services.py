@@ -103,17 +103,17 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
                 continue
             if assessment.questions.exists():
                 available = assessment.questions.filter(
-                    models.Q(section=sec) | models.Q(section_type=sec.code),
+                    models.Q(section=sec) | models.Q(section_type__iexact=sec.code) | models.Q(section__code__iexact=sec.code),
                     is_active=True,
                 ).count()
             else:
                 available = QuestionBank.objects.filter(
-                    models.Q(section=sec) | models.Q(section_type=sec.code),
+                    models.Q(section=sec) | models.Q(section_type__iexact=sec.code) | models.Q(section__code__iexact=sec.code),
                     is_active=True,
                 ).count()
             if available < needed:
                 errors.append(
-                    f"Insufficient '{sec.name}' questions in {scope_name}: found {available}, requires {needed}."
+                    f"Insufficient '{sec.name}' ({sec.code}) questions in {scope_name}: found {available}, requires {needed}."
                 )
     else:
         apt_count = aptitude_count if aptitude_count is not None else (assessment.aptitude_count if assessment else 25)
@@ -121,17 +121,21 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
 
         if assessment and assessment.questions.exists():
             active_aptitude = assessment.questions.filter(
-                section_type=QuestionBank.SectionType.APTITUDE, is_active=True
+                models.Q(section_type__iexact=QuestionBank.SectionType.APTITUDE) | models.Q(section__code__iexact="APTITUDE"),
+                is_active=True,
             ).count()
             active_coding = assessment.questions.filter(
-                section_type=QuestionBank.SectionType.CODING, is_active=True
+                models.Q(section_type__iexact=QuestionBank.SectionType.CODING) | models.Q(section__code__iexact="CODING"),
+                is_active=True,
             ).count()
         else:
             active_aptitude = QuestionBank.objects.filter(
-                section_type=QuestionBank.SectionType.APTITUDE, is_active=True
+                models.Q(section_type__iexact=QuestionBank.SectionType.APTITUDE) | models.Q(section__code__iexact="APTITUDE"),
+                is_active=True,
             ).count()
             active_coding = QuestionBank.objects.filter(
-                section_type=QuestionBank.SectionType.CODING, is_active=True
+                models.Q(section_type__iexact=QuestionBank.SectionType.CODING) | models.Q(section__code__iexact="CODING"),
+                is_active=True,
             ).count()
 
         if active_aptitude < apt_count:
@@ -159,14 +163,14 @@ def select_balanced_questions(section_type: str, required_count: int, assessment
     if assessment and assessment.questions.exists():
         qs = list(
             assessment.questions.filter(
-                models.Q(section_type=section_type) | models.Q(section__code=section_type),
+                models.Q(section_type__iexact=section_type) | models.Q(section__code__iexact=section_type),
                 is_active=True,
             )
         )
     else:
         qs = list(
             QuestionBank.objects.filter(
-                models.Q(section_type=section_type) | models.Q(section__code=section_type),
+                models.Q(section_type__iexact=section_type) | models.Q(section__code__iexact=section_type),
                 is_active=True,
             )
         )
@@ -242,6 +246,9 @@ def open_assessment(assessment: Assessment, user=None):
     Opens an assessment for candidate attempts.
     Validates question bank sufficiency and eligible colleges.
     """
+    if assessment.status == Assessment.Status.ARCHIVED:
+        raise ValidationError({"detail": f"Cannot open archived assessment '{assessment.title}'. Please unarchive it first."})
+
     validate_question_bank_sufficiency(assessment=assessment)
     if not assessment.eligible_colleges.exists():
         raise ValidationError({"detail": "Assessment must have at least one assigned college before opening."})

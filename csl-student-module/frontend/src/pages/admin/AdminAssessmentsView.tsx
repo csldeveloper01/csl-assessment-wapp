@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatApiError } from '../../utils/errorFormatter';
 import {
   getAdminAssessments,
   getAdminAssessmentDetail,
@@ -183,16 +184,14 @@ export function AdminAssessmentsView({
       setSelectedCollegeIdsForAssign(colIds);
     } catch (err: any) {
       console.error('Failed to fetch assessment detail:', err);
-      const status = err.response?.status;
+      const status = err?.response?.status;
       if (status === 404) {
         setDetailError('Assessment not found. It may have been archived or deleted.');
       } else if (status === 401 || status === 403) {
         setDetailError('Access denied: Administrator permissions required.');
       } else {
         setDetailError(
-          err.response?.data?.detail ||
-          err.message ||
-          'Failed to load assessment details from server. Please check your connection and retry.'
+          formatApiError(err, 'Failed to load assessment details from server. Please check your connection and retry.')
         );
       }
     } finally {
@@ -227,7 +226,7 @@ export function AdminAssessmentsView({
         handleOpenDetail(assessment);
       }
     } catch (err: any) {
-      setActionMessage({ text: err.response?.data?.detail || 'Failed to prepare assessment.', type: 'error' });
+      setActionMessage({ text: formatApiError(err, 'Failed to prepare assessment.'), type: 'error' });
     }
   };
 
@@ -241,7 +240,7 @@ export function AdminAssessmentsView({
         handleOpenDetail(assessment);
       }
     } catch (err: any) {
-      setActionMessage({ text: err.response?.data?.detail || 'Failed to open assessment.', type: 'error' });
+      setActionMessage({ text: formatApiError(err, 'Failed to open assessment.'), type: 'error' });
     }
   };
 
@@ -264,7 +263,7 @@ export function AdminAssessmentsView({
         handleOpenDetail(selectedAssessment);
       }
     } catch (err: any) {
-      setActionMessage({ text: err.response?.data?.detail || 'Failed to close assessment.', type: 'error' });
+      setActionMessage({ text: formatApiError(err, 'Failed to close assessment.'), type: 'error' });
     } finally {
       setClosing(false);
     }
@@ -286,7 +285,7 @@ export function AdminAssessmentsView({
         setSelectedAssessment(null);
       }
     } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Failed to delete assessment.';
+      const msg = formatApiError(err, 'Failed to delete assessment.');
       setActionMessage({ text: msg, type: 'error' });
       alert(`Delete Error: ${msg}`);
     }
@@ -300,7 +299,7 @@ export function AdminAssessmentsView({
       setActionMessage({ text: res.message, type: 'success' });
       fetchAssessments();
     } catch (err: any) {
-      setActionMessage({ text: err.response?.data?.detail || 'Failed to archive assessment.', type: 'error' });
+      setActionMessage({ text: formatApiError(err, 'Failed to archive assessment.'), type: 'error' });
     }
   };
 
@@ -313,7 +312,7 @@ export function AdminAssessmentsView({
       fetchAssessments();
       handleOpenDetail(assessmentDetail);
     } catch (err: any) {
-      setActionMessage({ text: err.response?.data?.detail || 'Failed to assign colleges.', type: 'error' });
+      setActionMessage({ text: formatApiError(err, 'Failed to assign colleges.'), type: 'error' });
     } finally {
       setSavingColleges(false);
     }
@@ -402,8 +401,7 @@ export function AdminAssessmentsView({
       fetchAssessments();
       setActionMessage({ text: `Assessment "${createForm.title}" created successfully in DRAFT state.`, type: 'success' });
     } catch (err: any) {
-      const msg = err.response?.data?.code?.[0] || err.response?.data?.detail || 'Failed to create assessment.';
-      setCreateError(msg);
+      setCreateError(formatApiError(err, 'Failed to create assessment.'));
     } finally {
       setCreateSubmitting(false);
     }
@@ -524,15 +522,7 @@ export function AdminAssessmentsView({
       }
       setActionMessage({ text: `Assessment "${editForm.title}" updated successfully.`, type: 'success' });
     } catch (err: any) {
-      const detailMsg =
-        err.response?.data?.detail ||
-        err.response?.data?.non_field_errors?.[0] ||
-        (err.response?.data && typeof err.response.data === 'object'
-          ? Object.entries(err.response.data)
-              .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-              .join(' | ')
-          : 'Failed to update assessment.');
-      setEditError(detailMsg);
+      setEditError(formatApiError(err, 'Failed to update assessment.'));
     } finally {
       setEditSubmitting(false);
     }
@@ -577,8 +567,7 @@ export function AdminAssessmentsView({
       setShowInlineSectionModal(false);
       setInlineSectionForm({ name: '', code: '', description: '' });
     } catch (err: any) {
-      const msg = err.response?.data?.code?.[0] || err.response?.data?.detail || 'Failed to create reusable section.';
-      setInlineSectionError(msg);
+      setInlineSectionError(formatApiError(err, 'Failed to create reusable section.'));
     } finally {
       setInlineSectionSaving(false);
     }
@@ -680,7 +669,7 @@ export function AdminAssessmentsView({
             alignItems: 'center',
           }}
         >
-          <span>{actionMessage.text}</span>
+          <span>{formatApiError(actionMessage.text)}</span>
           <button
             onClick={() => setActionMessage(null)}
             style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontWeight: 700 }}

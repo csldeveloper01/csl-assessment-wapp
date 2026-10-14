@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { formatApiError } from '../../utils/errorFormatter';
 import {
   getAdminColleges,
   createAdminCollege,
@@ -77,7 +78,7 @@ export function AdminCollegesView() {
         prev.map((c) => (c.id === college.id ? { ...c, is_active: res.is_active } : c))
       );
     } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Failed to toggle status.';
+      const msg = formatApiError(err, 'Failed to toggle status.');
       alert(`Error toggling status: ${msg}`);
       console.error('Failed to toggle status:', err);
     }
@@ -97,7 +98,7 @@ export function AdminCollegesView() {
         setSelectedCollege(null);
       }
     } catch (err: any) {
-      const msg = err.response?.data?.detail || err.message || 'Failed to delete college.';
+      const msg = formatApiError(err, 'Failed to delete college.');
       alert(`Delete Error: ${msg}`);
     }
   };
@@ -154,8 +155,7 @@ export function AdminCollegesView() {
       });
       fetchColleges();
     } catch (err: any) {
-      const msg = err.response?.data?.code?.[0] || err.response?.data?.detail || 'Failed to create college.';
-      setCreateError(msg);
+      setCreateError(formatApiError(err, 'Failed to create college.'));
     } finally {
       setCreateSubmitting(false);
     }
@@ -182,7 +182,7 @@ export function AdminCollegesView() {
       setImportResult(res);
       fetchColleges();
     } catch (err: any) {
-      setImportError(err.response?.data?.detail || 'Failed to import candidates.');
+      setImportError(formatApiError(err, 'Failed to import candidates.'));
     } finally {
       setImporting(false);
     }

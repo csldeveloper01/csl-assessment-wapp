@@ -362,6 +362,56 @@ class AdminAssessmentDetailView(APIView):
         return Response({"message": f"Assessment '{title}' ({code}) deleted successfully."}, status=status.HTTP_200_OK)
 
 
+def format_validation_error_response(e: Exception) -> Response:
+    """
+    Constructs a consistent, structured, human-readable error response
+    for administrative action failures without nesting raw object dicts inside 'detail'.
+    """
+    bank_error = None
+    errors_dict = {}
+    message = str(e)
+
+    if hasattr(e, "detail"):
+        raw_detail = e.detail
+        if isinstance(raw_detail, dict):
+            errors_dict = {k: str(v) for k, v in raw_detail.items()}
+            if "bank_error" in raw_detail:
+                bank_error = str(raw_detail["bank_error"])
+                message = bank_error
+            elif "detail" in raw_detail:
+                message = str(raw_detail["detail"])
+            else:
+                first_val = next(iter(raw_detail.values()))
+                message = str(first_val[0] if isinstance(first_val, list) and first_val else first_val)
+        elif isinstance(raw_detail, list):
+            message = "; ".join(str(item) for item in raw_detail)
+            errors_dict = {"non_field_errors": message}
+        else:
+            message = str(raw_detail)
+            errors_dict = {"detail": message}
+    elif hasattr(e, "message_dict"):
+        errors_dict = {k: "; ".join(v) if isinstance(v, list) else str(v) for k, v in e.message_dict.items()}
+        if "bank_error" in errors_dict:
+            bank_error = errors_dict["bank_error"]
+            message = bank_error
+        elif "detail" in errors_dict:
+            message = errors_dict["detail"]
+        else:
+            message = "; ".join(f"{k}: {v}" for k, v in errors_dict.items())
+    elif hasattr(e, "messages"):
+        message = "; ".join(str(m) for m in e.messages)
+        errors_dict = {"non_field_errors": message}
+
+    payload = {
+        "detail": message,
+        "errors": errors_dict,
+    }
+    if bank_error:
+        payload["bank_error"] = bank_error
+
+    return Response(payload, status=status.HTTP_400_BAD_REQUEST)
+
+
 class AdminAssessmentPrepareView(APIView):
     permission_classes = [IsCSLAdminUser]
 
@@ -374,8 +424,7 @@ class AdminAssessmentPrepareView(APIView):
                 "status": assessment.status,
             })
         except Exception as e:
-            detail = getattr(e, "detail", str(e))
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return format_validation_error_response(e)
 
 
 class AdminAssessmentOpenView(APIView):
@@ -391,8 +440,7 @@ class AdminAssessmentOpenView(APIView):
                 "opened_at": assessment.opened_at,
             })
         except Exception as e:
-            detail = getattr(e, "detail", str(e))
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return format_validation_error_response(e)
 
 
 class AdminAssessmentCloseView(APIView):
@@ -410,8 +458,7 @@ class AdminAssessmentCloseView(APIView):
                 "close_policy": assessment.close_policy,
             })
         except Exception as e:
-            detail = getattr(e, "detail", str(e))
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return format_validation_error_response(e)
 
 
 class AdminAssessmentArchiveView(APIView):
@@ -426,8 +473,7 @@ class AdminAssessmentArchiveView(APIView):
                 "status": assessment.status,
             })
         except Exception as e:
-            detail = getattr(e, "detail", str(e))
-            return Response({"detail": detail}, status=status.HTTP_400_BAD_REQUEST)
+            return format_validation_error_response(e)
 
 
 class AdminAssessmentAssignCollegesView(APIView):

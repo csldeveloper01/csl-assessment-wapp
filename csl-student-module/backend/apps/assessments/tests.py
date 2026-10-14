@@ -1391,3 +1391,268 @@ class AdminAssessmentDetailViewRegressionTests(TestCase):
         url = f"/api/csl-admin/assessments/{random_uuid}/"
         res = self.client.get(url)
         self.assertEqual(res.status_code, 404)
+
+
+class AssessmentOpenRegressionTests(TestCase):
+    def setUp(self):
+        from apps.users.models import User
+        from apps.assessments.models import AssessmentSection, AssessmentSectionAllocation
+        self.client = Client()
+        self.admin = User.objects.create_user(
+            username="open_tester_admin",
+            email="open_tester@csl.com",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.AccountStatus.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.college = College.objects.create(
+            name="Alpha Engineering College",
+            code="AEC01",
+            contact_email="aec@example.com",
+            is_active=True,
+        )
+        self.section_apt, _ = AssessmentSection.objects.get_or_create(
+            code="APTITUDE",
+            defaults={"name": "General Aptitude", "is_active": True, "order": 1},
+        )
+        self.section_cod, _ = AssessmentSection.objects.get_or_create(
+            code="CODING",
+            defaults={"name": "Coding Fundamentals", "is_active": True, "order": 2},
+        )
+
+        # Seed 10 questions for each section
+        for i in range(10):
+            QuestionBank.objects.create(
+                prompt=f"Aptitude Q{i+1}",
+                section=self.section_apt,
+                section_type="APTITUDE",
+                difficulty="MEDIUM",
+                option_a="1", option_b="2", option_c="3", option_d="4",
+                correct_option="A",
+                is_active=True,
+            )
+            QuestionBank.objects.create(
+                prompt=f"Coding Q{i+1}",
+                section=self.section_cod,
+                section_type="CODING",
+                difficulty="MEDIUM",
+                option_a="1", option_b="2", option_c="3", option_d="4",
+                correct_option="B",
+                is_active=True,
+            )
+
+    def test_open_assessment_fails_insufficient_bank_returns_structured_bank_error(self):
+        """
+        When question bank lacks enough questions, /open/ returns 400 with a string detail
+        and structured bank_error (not an unformatted dict that crashes React),
+        and the assessment status remains in its previous valid state (DRAFT).
+        """
+        self.client.force_login(self.admin)
+        from apps.assessments.models import AssessmentSection, AssessmentSectionAllocation
+
+        unique_sec = AssessmentSection.objects.create(
+            name="Advanced Quantum",
+            code="QUANTUM_TEST",
+            is_active=True,
+            order=1,
+        )
+
+        assessment = Assessment.objects.create(
+            code="INSUF-01",
+            title="Insufficient Bank Test",
+            duration_minutes=30,
+            total_marks=20,
+            status=Assessment.Status.DRAFT,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        # Requires 20 questions, but bank has 0
+        AssessmentSectionAllocation.objects.create(
+            assessment=assessment,
+            section=unique_sec,
+            question_count=20,
+            marks_per_question=1,
+            order=1,
+        )
+
+        url = f"/api/csl-admin/assessments/{assessment.id}/open/"
+        res = self.client.post(url)
+        self.assertEqual(res.status_code, 400)
+
+        # Verify structured response shape
+        self.assertIn("detail", res.data)
+        self.assertIsInstance(res.data["detail"], str)
+        self.assertIn("bank_error", res.data)
+        self.assertIsInstance(res.data["bank_error"], str)
+        self.assertIn("Insufficient", res.data["detail"])
+
+        # Assessment MUST remain in DRAFT status
+        assessment.refresh_from_db()
+        self.assertEqual(assessment.status, Assessment.Status.DRAFT)
+        self.assertIsNone(assessment.opened_at)
+
+    def test_open_assessment_fails_when_no_colleges_assigned(self):
+        """
+        Opening an assessment with no eligible colleges returns 400 with string detail.
+        """
+        self.client.force_login(self.admin)
+        from apps.assessments.models import AssessmentSectionAllocation
+
+        assessment = Assessment.objects.create(
+            code="NO-COLLEGE-01",
+            title="No College Test",
+            duration_minutes=30,
+            total_marks=10,
+            status=Assessment.Status.DRAFT,
+        )
+        AssessmentSectionAllocation.objects.create(
+            assessment=assessment,
+            section=self.section_apt,
+            question_count=5,
+            marks_per_question=1,
+            order=1,
+        )
+        AssessmentSectionAllocation.objects.create(
+            assessment=assessment,
+            section=self.section_cod,
+            question_count=5,
+            marks_per_question=1,
+            order=2,
+        )
+
+        url = f"/api/csl-admin/assessments/{assessment.id}/open/"
+        res = self.client.post(url)
+        self.assertEqual(res.status_code, 400)
+        self.assertIsInstance(res.data["detail"], str)
+        self.assertIn("college", res.data["detail"].lower())
+
+        assessment.refresh_from_db()
+        self.assertEqual(assessment.status, Assessment.Status.DRAFT)
+
+    def test_open_assessment_fails_when_archived(self):
+        """
+        Opening an archived assessment returns 400 with a clear message and does not alter status.
+        """
+        self.client.force_login(self.admin)
+        assessment = Assessment.objects.create(
+            code="ARCH-01",
+            title="Archived Assessment",
+            duration_minutes=30,
+            total_marks=10,
+            status=Assessment.Status.ARCHIVED,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        url = f"/api/csl-admin/assessments/{assessment.id}/open/"
+        res = self.client.post(url)
+        self.assertEqual(res.status_code, 400)
+        self.assertIsInstance(res.data["detail"], str)
+        self.assertIn("archived", res.data["detail"].lower())
+
+        assessment.refresh_from_db()
+        self.assertEqual(assessment.status, Assessment.Status.ARCHIVED)
+
+    def test_open_assessment_success_and_student_full_lifecycle(self):
+        """
+        When question bank is sufficient and colleges are assigned:
+        1. Admin successfully opens assessment.
+        2. Student registers with college and assessment.
+        3. Student starts assessment with X-Assessment-Token.
+        4. Student receives questions.
+        5. Student saves answer.
+        6. Student finalizes attempt.
+        """
+        self.client.force_login(self.admin)
+        from apps.assessments.models import AssessmentSectionAllocation
+
+        assessment = Assessment.objects.create(
+            code="SUCC-01",
+            title="Success Assessment",
+            duration_minutes=30,
+            total_marks=4,
+            status=Assessment.Status.DRAFT,
+        )
+        assessment.eligible_colleges.add(self.college)
+        AssessmentSectionAllocation.objects.create(
+            assessment=assessment,
+            section=self.section_apt,
+            question_count=2,
+            marks_per_question=1,
+            order=1,
+        )
+        AssessmentSectionAllocation.objects.create(
+            assessment=assessment,
+            section=self.section_cod,
+            question_count=2,
+            marks_per_question=1,
+            order=2,
+        )
+
+        # 1. Admin opens assessment
+        url = f"/api/csl-admin/assessments/{assessment.id}/open/"
+        open_res = self.client.post(url)
+        self.assertEqual(open_res.status_code, 200)
+        self.assertEqual(open_res.data["status"], Assessment.Status.OPEN)
+        self.assertIsNotNone(open_res.data["opened_at"])
+
+        assessment.refresh_from_db()
+        self.assertEqual(assessment.status, Assessment.Status.OPEN)
+
+        # 2. Student registers
+        reg_res = self.client.post(
+            "/api/assessment/register/",
+            {
+                "full_name": "Rohan Kumar",
+                "register_number": "ROHAN-007",
+                "college_id": self.college.id,
+                "email": "rohan@example.com",
+                "department": "CSE",
+                "year_of_study": "3rd Year",
+                "phone_number": "9876543210",
+                "assessment_id": str(assessment.id),
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(reg_res.status_code, 201)
+        token = reg_res.data["assessment_token"]
+
+        # 3. Student starts assessment with X-Assessment-Token
+        start_res = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+            HTTP_X_ASSESSMENT_TOKEN=token,
+        )
+        self.assertEqual(start_res.status_code, 200)
+        attempt_id = start_res.data["id"]
+        questions = start_res.data["questions"]
+        self.assertEqual(len(questions), 4)
+
+        # 4. Student saves answer
+        first_q = questions[0]
+        save_res = self.client.post(
+            f"/api/assessment/attempts/{attempt_id}/answer/",
+            {
+                "question_order": first_q["question_order"],
+                "selected_option": "A",
+            },
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+            HTTP_X_ASSESSMENT_TOKEN=token,
+        )
+        self.assertEqual(save_res.status_code, 200)
+
+        # 5. Student submits attempt
+        submit_res = self.client.post(
+            f"/api/assessment/attempts/{attempt_id}/finalize/",
+            {},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+            HTTP_X_ASSESSMENT_TOKEN=token,
+        )
+        self.assertEqual(submit_res.status_code, 200)
+        self.assertEqual(submit_res.data["state"], "SUBMITTED")
+

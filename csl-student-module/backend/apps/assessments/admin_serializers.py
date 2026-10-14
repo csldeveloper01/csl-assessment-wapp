@@ -245,14 +245,22 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
         return obj.questions.filter(section_type=QuestionBank.SectionType.CODING, is_active=True).count()
 
     def get_pool_sufficient(self, obj):
+        from django.db.models import Q
         try:
             allocs = obj.section_allocations.select_related("section").all()
             if allocs.exists():
                 for alloc in allocs:
+                    sec = alloc.section
                     if obj.questions.exists():
-                        cnt = obj.questions.filter(section_type=alloc.section.code, is_active=True).count()
+                        cnt = obj.questions.filter(
+                            Q(section=sec) | Q(section_type__iexact=sec.code) | Q(section__code__iexact=sec.code),
+                            is_active=True,
+                        ).count()
                     else:
-                        cnt = QuestionBank.objects.filter(section_type=alloc.section.code, is_active=True).count()
+                        cnt = QuestionBank.objects.filter(
+                            Q(section=sec) | Q(section_type__iexact=sec.code) | Q(section__code__iexact=sec.code),
+                            is_active=True,
+                        ).count()
                     if cnt < alloc.question_count:
                         return False
                 return True
