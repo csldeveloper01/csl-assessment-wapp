@@ -1,4 +1,6 @@
 import logging
+import time
+
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
@@ -398,12 +400,31 @@ class StartAssessmentView(APIView):
                 )
 
         config = get_or_create_default_config()
+        request_started = time.perf_counter()
 
         try:
+
+            service_started = time.perf_counter()
             attempt = start_assessment_for_candidate(candidate, assessment=assessment, config=config)
+            service_ms = (time.perf_counter() - service_started) * 1000
+            logger.info(
+                "ASSESSMENT_START_TIMING service_ms=%.1f candidate_id=%s assessment_id=%s",
+                service_ms, candidate.id, assessment.id if assessment else None,
+            )
+
             token = generate_candidate_token(str(candidate.id), str(attempt.id))
 
+
+            serializer_started = time.perf_counter()
             serializer = AssessmentAttemptDetailSerializer(attempt)
+            res_data = dict(serializer.data)
+            serializer_ms = (time.perf_counter() - serializer_started) * 1000
+            total_ms = (time.perf_counter() - request_started) * 1000
+            logger.info(
+                "ASSESSMENT_START_TIMING serializer_ms=%.1f total_ms=%.1f attempt_id=%s",
+                serializer_ms, total_ms, attempt.id,
+            )
+
             res_data = dict(serializer.data)
             res_data["assessment_token"] = token
             return Response(res_data, status=status.HTTP_200_OK)
