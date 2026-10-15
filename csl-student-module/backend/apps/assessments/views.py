@@ -416,6 +416,13 @@ class StartAssessmentView(APIView):
 
 
             serializer_started = time.perf_counter()
+            attempt = AssessmentAttempt.objects.select_related(
+                "candidate", "assessment", "config"
+            ).prefetch_related(
+                "question_snapshots__question",
+                "assessment__section_allocations__section",
+            ).get(pk=attempt.pk)
+
             serializer = AssessmentAttemptDetailSerializer(attempt)
             res_data = dict(serializer.data)
             serializer_ms = (time.perf_counter() - serializer_started) * 1000
@@ -425,9 +432,9 @@ class StartAssessmentView(APIView):
                 serializer_ms, total_ms, attempt.id,
             )
 
-            res_data = dict(serializer.data)
             res_data["assessment_token"] = token
             return Response(res_data, status=status.HTTP_200_OK)
+        
         except ValidationError as e:
             detail_msg = getattr(e, "detail", str(e))
             if isinstance(detail_msg, dict):
