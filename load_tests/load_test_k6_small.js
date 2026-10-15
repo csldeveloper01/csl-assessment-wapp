@@ -16,7 +16,7 @@ export const options = {
   scenarios: {
     student_flow: {
       executor: 'per-vu-iterations',
-      vus: 5,
+      vus: 10,
       iterations: 1,
       maxDuration: '3m',
     },

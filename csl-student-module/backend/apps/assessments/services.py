@@ -910,6 +910,8 @@ def save_candidate_answer(attempt_or_id, question_order: int, selected_option: s
     Accepts either an AssessmentAttempt instance or attempt UUID/ID string.
     """
     attempt_id = attempt_or_id.id if isinstance(attempt_or_id, AssessmentAttempt) else attempt_or_id
+    service_start = time.perf_counter()
+    lock_start = time.perf_counter()
 
     with transaction.atomic():
         locked_attempt = (
@@ -917,6 +919,8 @@ def save_candidate_answer(attempt_or_id, question_order: int, selected_option: s
             .filter(id=attempt_id)
             .first()
         )
+        lock_ms = (time.perf_counter() - lock_start) * 1000.0
+
         if not locked_attempt:
             raise NotFound("Attempt not found.")
 
@@ -928,6 +932,7 @@ def save_candidate_answer(attempt_or_id, question_order: int, selected_option: s
 
         if locked_attempt.is_expired():
             is_expired = True
+            update_ms = 0.0
         else:
             is_expired = False
             selected_clean = selected_option.strip().upper() if selected_option else ""
@@ -935,6 +940,7 @@ def save_candidate_answer(attempt_or_id, question_order: int, selected_option: s
                 raise ValidationError({"detail": "Invalid option selected."})
 
             now = timezone.now()
+            update_start = time.perf_counter()
             rows_updated = AttemptQuestionSnapshot.objects.filter(
                 attempt=locked_attempt, question_order=question_order
             ).update(
@@ -942,12 +948,21 @@ def save_candidate_answer(attempt_or_id, question_order: int, selected_option: s
                 answered_at=now,
                 updated_at=now,
             )
+            update_ms = (time.perf_counter() - update_start) * 1000.0
             if rows_updated == 0:
                 raise ValidationError({"detail": "Invalid question order."})
 
     if is_expired:
         finalize_assessment_attempt(locked_attempt, final_state=AssessmentAttempt.State.TIMED_OUT)
         raise ValidationError({"detail": "Assessment time has expired."})
+
+    service_ms = (time.perf_counter() - service_start) * 1000.0
+    logger.info(
+        "ANSWER_SAVE_TIMING lock_ms=%.1f update_ms=%.1f service_ms=%.1f",
+        lock_ms,
+        update_ms,
+        service_ms,
+    )
 
     return AttemptQuestionSnapshot(
         attempt=locked_attempt,
@@ -963,6 +978,7 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
     Evaluates MCQs server-side, tallies scores, locks answers, transitions state.
     Uses select_for_update() to prevent concurrent finalization or duplicate scoring.
     """
+    service_start = time.perf_counter()
     locked_attempt = (
         AssessmentAttempt.objects.select_for_update()
         .filter(id=attempt.id)
@@ -977,6 +993,12 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
         AssessmentAttempt.State.TIMED_OUT,
         AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
     ]:
+        service_ms = (time.perf_counter() - service_start) * 1000.0
+        logger.info(
+            "ASSESSMENT_FINALIZE_TIMING service_ms=%.1f final_state=%s",
+            service_ms,
+            locked_attempt.state,
+        )
         return locked_attempt
 
     now = timezone.now()
@@ -1042,6 +1064,13 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
             else IntegrityEvent.EventType.TIMED_OUT
         ),
         metadata={"total_score": total_score, "final_state": final_state},
+    )
+
+    service_ms = (time.perf_counter() - service_start) * 1000.0
+    logger.info(
+        "ASSESSMENT_FINALIZE_TIMING service_ms=%.1f final_state=%s",
+        service_ms,
+        final_state,
     )
 
     return locked_attempt

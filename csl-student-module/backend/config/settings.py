@@ -72,6 +72,7 @@ MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',  # must be first
     'django.middleware.security.SecurityMiddleware',
     'whitenoise.middleware.WhiteNoiseMiddleware',
+    'apps.assessments.middleware.ApiPerformanceMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
     'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
@@ -286,6 +287,11 @@ LOGGING = {
             'propagate': False,
         },
         'apps.assessments': {
+            'handlers': ['console'],
+            'level': 'INFO',
+            'propagate': False,
+        },
+        'api.perf': {
             'handlers': ['console'],
             'level': 'INFO',
             'propagate': False,
