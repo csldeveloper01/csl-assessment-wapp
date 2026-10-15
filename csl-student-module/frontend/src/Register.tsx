@@ -28,7 +28,7 @@ export function Register() {
 
     switch (field) {
       case 'name':
-        if (!trimmed) return 'Full name is required.';
+        if (!trimmed) return 'Please enter your full name.';
         if (trimmed.length > 50) {
           return 'Full name cannot exceed 50 characters.';
         }
@@ -38,9 +38,9 @@ export function Register() {
         return '';
 
       case 'registration_number':
-        if (!trimmed) return 'Register / roll number is required.';
+        if (!trimmed) return 'Please enter your register / roll number.';
         if (trimmed.length > 25) {
-          return 'Register / roll number cannot exceed 25 characters.';
+          return 'Register number cannot exceed 25 characters.';
         }
         if (!/^[A-Za-z0-9][A-Za-z0-9\s\-_/]*$/.test(trimmed)) {
           return 'Register / roll number must contain only letters, numbers, hyphens, slashes, or spaces.';
@@ -48,12 +48,12 @@ export function Register() {
         return '';
 
       case 'email': {
-        if (!trimmed) return 'College email is required.';
+        if (!trimmed) return 'Please enter your college email address.';
         if (trimmed.length > 254) {
           return 'College email cannot exceed 254 characters.';
         }
         if (/\s/.test(trimmed)) {
-          return 'Enter a valid college email address without spaces.';
+          return 'Please enter a valid college email address.';
         }
 
         // Email syntax validation: local part, @, domain, and valid TLD
@@ -61,7 +61,7 @@ export function Register() {
           /^[a-zA-Z0-9_\-\.\+]+@[a-zA-Z0-9\-\.]+\.[a-zA-Z0-9\-]+$/;
 
         if (!emailPattern.test(trimmed)) {
-          return 'Enter a valid college email address (e.g. student@college.edu).';
+          return 'Please enter a valid college email address.';
         }
         return '';
       }
