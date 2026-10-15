@@ -216,7 +216,10 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
         return max(0, max_switches - obj.tab_switch_count)
 
     def get_questions(self, obj):
-        snapshots = obj.question_snapshots.all().order_by("question_order")
+        snapshots = sorted(
+            obj.question_snapshots.all(),
+            key=lambda snapshot: snapshot.question_order,
+        )
         return QuestionSnapshotStudentSerializer(snapshots, many=True).data
 
 
