@@ -63,17 +63,21 @@ a:hover {
   align-items: center;
   justify-content: center;
   width: 100%;
-  margin: 0 auto 18px;
+  margin: 0 auto 16px;
   padding: 0;
   background: transparent;
   border: none;
   border-radius: 0;
   box-shadow: none;
-  color: #2563eb;
-  font-size: 36px;
-  font-weight: 800;
-  letter-spacing: 2px;
-  line-height: 1.2;
+}
+
+.registration-logo-img {
+  max-width: 180px;
+  width: auto;
+  height: auto;
+  max-height: 48px;
+  object-fit: contain;
+  display: block;
 }
 
 .registration-header h1 {
