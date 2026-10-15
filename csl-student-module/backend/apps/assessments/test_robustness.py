@@ -1,6 +1,7 @@
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import timedelta
-from django.test import TestCase, Client
+from django.test import TestCase, TransactionTestCase, Client
 from django.test.utils import CaptureQueriesContext
 from django.db import connection
 from django.utils import timezone
@@ -486,4 +487,378 @@ class ProductionRobustnessTests(TestCase):
         # Baseline was 31 queries; with query combining, prefetching, and eliminating redundant validation queries, count is <= 22
         self.assertLessEqual(len(ctx.captured_queries), 22, f"Executed {len(ctx.captured_queries)} queries (expected <= 22)")
         print(f"\n[QUERY_BUDGET_VERIFIED] Assessment start completed in {len(ctx.captured_queries)} queries (budget <= 22).")
+
+    def test_answer_save_query_budget(self):
+        """Verifies that saving an answer executes at most 5 database operations (3 queries + transaction boundaries)."""
+        cand = Candidate.objects.create(
+            full_name="Answer Budget Candidate",
+            register_number="ANS_QBC_01",
+            college=self.college.name,
+            college_ref=self.college,
+            email="ans_qbc_01@apex.edu",
+            department="IT",
+            year_of_study="4",
+        )
+        attempt = AssessmentAttempt.objects.create(
+            candidate=cand,
+            assessment=self.assessment,
+            config=self.config,
+            deadline=timezone.now() + timedelta(minutes=60),
+            state=AssessmentAttempt.State.IN_PROGRESS,
+        )
+        snap = AttemptQuestionSnapshot.objects.create(
+            attempt=attempt,
+            question=QuestionBank.objects.first(),
+            question_order=1,
+            prompt="Budget Question",
+            option_a_text="Opt A",
+            option_b_text="Opt B",
+            option_c_text="Opt C",
+            option_d_text="Opt D",
+            correct_option_key="A",
+        )
+        token = generate_candidate_token(cand.id, attempt_id=attempt.id)
+
+        # Clear client session from admin force_login so request uses candidate assessment token
+        client = Client()
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = client.post(
+                f"/api/assessment/attempts/{attempt.id}/answer/",
+                {"question_order": 1, "selected_option": "B"},
+                content_type="application/json",
+                HTTP_AUTHORIZATION=f"Bearer {token}",
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data["status"], "saved")
+        self.assertEqual(response.data["question_order"], 1)
+        self.assertEqual(response.data["selected_option"], "B")
+
+        # Baseline was 7 queries; with redundant attempt query & snapshot lock eliminated, count is <= 5 (including BEGIN & COMMIT)
+        self.assertLessEqual(len(ctx.captured_queries), 5, f"Executed {len(ctx.captured_queries)} queries (expected <= 5)")
+        print(f"\n[QUERY_BUDGET_VERIFIED] Answer save completed in {len(ctx.captured_queries)} queries (budget <= 5).")
+
+        # Explicitly verify all essential stages are present in captured queries
+        sql_statements = [q["sql"].strip() for q in ctx.captured_queries]
+        self.assertTrue(any("assessments_candidate" in s for s in sql_statements), "Authentication query must be captured")
+        self.assertTrue(any("assessments_assessmentattempt" in s for s in sql_statements), "Attempt lookup query must be captured")
+        self.assertTrue(any("assessments_attemptquestionsnapshot" in s and "UPDATE" in s for s in sql_statements), "Snapshot atomic update must be captured")
+        if connection.vendor == "postgresql":
+            self.assertTrue(any("FOR UPDATE" in s for s in sql_statements), "PostgreSQL FOR UPDATE must be present")
+            self.assertTrue(any("BEGIN" in s for s in sql_statements), "Transaction BEGIN must be captured")
+            self.assertTrue(any("COMMIT" in s for s in sql_statements), "Transaction COMMIT must be captured")
+        else:
+            self.assertTrue(any("SAVEPOINT" in s for s in sql_statements), "Transaction boundary must be captured")
+
+        # Verify DB persisted
+        snap.refresh_from_db()
+        self.assertEqual(snap.selected_option, "B")
+
+    def test_answer_save_unauthorized_and_not_found(self):
+        """Verifies strict ownership protection (403) and missing attempt handling (404)."""
+        cand_owner = Candidate.objects.create(
+            full_name="Owner Candidate",
+            register_number="OWNER_01",
+            college=self.college.name,
+            college_ref=self.college,
+            email="owner@apex.edu",
+            department="CSE",
+            year_of_study="4",
+        )
+        cand_attacker = Candidate.objects.create(
+            full_name="Attacker Candidate",
+            register_number="ATTACK_01",
+            college=self.college.name,
+            college_ref=self.college,
+            email="attacker@apex.edu",
+            department="CSE",
+            year_of_study="4",
+        )
+        attempt = AssessmentAttempt.objects.create(
+            candidate=cand_owner,
+            assessment=self.assessment,
+            config=self.config,
+            deadline=timezone.now() + timedelta(minutes=60),
+            state=AssessmentAttempt.State.IN_PROGRESS,
+        )
+        AttemptQuestionSnapshot.objects.create(
+            attempt=attempt,
+            question=QuestionBank.objects.first(),
+            question_order=1,
+            prompt="Security Question",
+            option_a_text="A",
+            option_b_text="B",
+            option_c_text="C",
+            option_d_text="D",
+            correct_option_key="A",
+        )
+        attacker_token = generate_candidate_token(cand_attacker.id)
+        owner_token = generate_candidate_token(cand_owner.id, attempt_id=attempt.id)
+        client = Client()
+
+        # 1. Attacker tries to save answer on owner's attempt -> 403 Forbidden
+        res_403 = client.post(
+            f"/api/assessment/attempts/{attempt.id}/answer/",
+            {"question_order": 1, "selected_option": "A"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {attacker_token}",
+        )
+        self.assertEqual(res_403.status_code, 403)
+        self.assertIn("forbidden", res_403.data.get("detail", "").lower())
+
+        # 2. Nonexistent attempt UUID -> 404 Not Found
+        fake_attempt_id = uuid.uuid4()
+        res_404 = client.post(
+            f"/api/assessment/attempts/{fake_attempt_id}/answer/",
+            {"question_order": 1, "selected_option": "A"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {owner_token}",
+        )
+        self.assertEqual(res_404.status_code, 404)
+
+    def test_answer_save_validations(self):
+        """Verifies validation on options and question numbers."""
+        cand = Candidate.objects.create(
+            full_name="Validation Candidate",
+            register_number="VAL_01",
+            college=self.college.name,
+            college_ref=self.college,
+            email="val_01@apex.edu",
+            department="IT",
+            year_of_study="4",
+        )
+        attempt = AssessmentAttempt.objects.create(
+            candidate=cand,
+            assessment=self.assessment,
+            config=self.config,
+            deadline=timezone.now() + timedelta(minutes=60),
+            state=AssessmentAttempt.State.IN_PROGRESS,
+        )
+        AttemptQuestionSnapshot.objects.create(
+            attempt=attempt,
+            question=QuestionBank.objects.first(),
+            question_order=1,
+            prompt="Validation Question",
+            option_a_text="A",
+            option_b_text="B",
+            option_c_text="C",
+            option_d_text="D",
+            correct_option_key="A",
+        )
+        token = generate_candidate_token(cand.id, attempt_id=attempt.id)
+        client = Client()
+
+        # Invalid option "E" -> 400 Bad Request
+        res_bad_opt = client.post(
+            f"/api/assessment/attempts/{attempt.id}/answer/",
+            {"question_order": 1, "selected_option": "E"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res_bad_opt.status_code, 400)
+        self.assertIn("detail", res_bad_opt.data)
+
+        # Invalid question order 50 (within 1-200 but not in attempt) -> 400 Bad Request
+        res_bad_q = client.post(
+            f"/api/assessment/attempts/{attempt.id}/answer/",
+            {"question_order": 50, "selected_option": "A"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res_bad_q.status_code, 400)
+        self.assertIn("Invalid question order", str(res_bad_q.data))
+
+    def test_answer_save_expired_and_inactive(self):
+        """Verifies that expired attempts transition to TIMED_OUT and inactive attempts reject answer saves."""
+        cand = Candidate.objects.create(
+            full_name="Expired Candidate",
+            register_number="EXP_01",
+            college=self.college.name,
+            college_ref=self.college,
+            email="exp_01@apex.edu",
+            department="IT",
+            year_of_study="4",
+        )
+        # Attempt with deadline in the past
+        attempt_expired = AssessmentAttempt.objects.create(
+            candidate=cand,
+            assessment=self.assessment,
+            config=self.config,
+            deadline=timezone.now() - timedelta(minutes=5),
+            state=AssessmentAttempt.State.IN_PROGRESS,
+        )
+        AttemptQuestionSnapshot.objects.create(
+            attempt=attempt_expired,
+            question=QuestionBank.objects.first(),
+            question_order=1,
+            prompt="Expired Question",
+            option_a_text="A",
+            option_b_text="B",
+            option_c_text="C",
+            option_d_text="D",
+            correct_option_key="A",
+        )
+        token = generate_candidate_token(cand.id, attempt_id=attempt_expired.id)
+        client = Client()
+
+        res_expired = client.post(
+            f"/api/assessment/attempts/{attempt_expired.id}/answer/",
+            {"question_order": 1, "selected_option": "A"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res_expired.status_code, 400)
+        self.assertIn("expired", str(res_expired.data).lower())
+
+        attempt_expired.refresh_from_db()
+        self.assertEqual(attempt_expired.state, AssessmentAttempt.State.TIMED_OUT)
+        self.assertIsNotNone(attempt_expired.submitted_at, "Persisted attempt must have submitted_at timestamp")
+        self.assertIsNotNone(attempt_expired.total_score, "Persisted attempt must have finalized total_score")
+        self.assertIsNotNone(attempt_expired.percentage, "Persisted attempt must have finalized percentage")
+
+        # Submitted attempt rejects saves
+        attempt_expired.state = AssessmentAttempt.State.SUBMITTED
+        attempt_expired.save(update_fields=["state"])
+
+        res_submitted = client.post(
+            f"/api/assessment/attempts/{attempt_expired.id}/answer/",
+            {"question_order": 1, "selected_option": "B"},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res_submitted.status_code, 400)
+        self.assertIn("not active", str(res_submitted.data).lower())
+
+
+class AnswerSaveConcurrencyTests(TransactionTestCase):
+    """
+    Tests high-concurrency answer-save execution against the real HTTP endpoint
+    using multi-threaded worker pools and separate database connections.
+    """
+
+    def setUp(self):
+        self.college = College.objects.create(
+            name="Concurrent College",
+            code="CONC01",
+            is_active=True,
+        )
+        self.sec = AssessmentSection.objects.create(
+            name="Concurrency Section",
+            code="CONC_SEC",
+            is_active=True,
+        )
+        self.config = AssessmentConfig.objects.create(
+            title="Concurrency Config",
+            duration_minutes=60,
+            aptitude_count=25,
+            coding_count=25,
+            total_marks=50,
+            is_active=True,
+        )
+        self.assessment = Assessment.objects.create(
+            title="Concurrency Assessment",
+            code="CONC_ASS_01",
+            duration_minutes=60,
+            total_marks=20,
+            status=Assessment.Status.OPEN,
+        )
+        self.assessment.eligible_colleges.add(self.college)
+
+        self.questions = []
+        for i in range(1, 6):
+            q = QuestionBank.objects.create(
+                section=self.sec,
+                section_type="CONC_SEC",
+                category="Programming",
+                prompt=f"Concurrency Q{i}: What is {i} + 1?",
+                option_a=str(i + 1),
+                option_b="0",
+                option_c="-1",
+                option_d="None",
+                correct_option="A",
+                is_active=True,
+            )
+            self.questions.append(q)
+
+    def test_concurrent_answer_saves_on_real_endpoint(self):
+        """Verifies that multiple concurrent threads posting to the answer endpoint serialize safely without errors."""
+        cand = Candidate.objects.create(
+            full_name="Concurrent Candidate",
+            register_number="CONC_CAND_01",
+            college=self.college.name,
+            college_ref=self.college,
+            email="conc_cand@apex.edu",
+            department="CSE",
+            year_of_study="4",
+        )
+        attempt = AssessmentAttempt.objects.create(
+            candidate=cand,
+            assessment=self.assessment,
+            config=self.config,
+            deadline=timezone.now() + timedelta(minutes=60),
+            state=AssessmentAttempt.State.IN_PROGRESS,
+        )
+        for idx, q in enumerate(self.questions, 1):
+            AttemptQuestionSnapshot.objects.create(
+                attempt=attempt,
+                question=q,
+                question_order=idx,
+                prompt=q.prompt,
+                option_a_text=q.option_a,
+                option_b_text=q.option_b,
+                option_c_text=q.option_c,
+                option_d_text=q.option_d,
+                correct_option_key="A",
+            )
+
+        token = generate_candidate_token(cand.id, attempt_id=attempt.id)
+
+        # 12 concurrent/rapid answer submissions
+        tasks = []
+        for i in range(12):
+            q_order = (i % 5) + 1
+            opt = ["A", "B", "C", "D"][i % 4]
+            tasks.append((q_order, opt))
+
+        if connection.vendor == "sqlite":
+            # In-memory SQLite uses per-connection private memory; test interleaved saves via client
+            results = []
+            for q_order, opt in tasks:
+                res = self.client.post(
+                    f"/api/assessment/attempts/{attempt.id}/answer/",
+                    {"question_order": q_order, "selected_option": opt},
+                    content_type="application/json",
+                    HTTP_AUTHORIZATION=f"Bearer {token}",
+                )
+                results.append((res.status_code, res.data))
+        else:
+            def worker_post(q_order, opt):
+                c = Client()
+                res = c.post(
+                    f"/api/assessment/attempts/{attempt.id}/answer/",
+                    {"question_order": q_order, "selected_option": opt},
+                    content_type="application/json",
+                    HTTP_AUTHORIZATION=f"Bearer {token}",
+                )
+                connection.close()
+                return res.status_code, res.data
+
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                results = list(pool.map(lambda args: worker_post(*args), tasks))
+
+        self.assertEqual(len(results), 12)
+        for status_code, data in results:
+            self.assertEqual(status_code, 200)
+            self.assertEqual(data["status"], "saved")
+            self.assertIn(data["selected_option"], ["A", "B", "C", "D"])
+
+        # Verify all snapshots in database hold valid options
+        snapshots = AttemptQuestionSnapshot.objects.filter(attempt=attempt)
+        self.assertEqual(snapshots.count(), 5)
+        for snap in snapshots:
+            self.assertIn(snap.selected_option, ["A", "B", "C", "D"])
+            self.assertIsNotNone(snap.answered_at)
+
+
 

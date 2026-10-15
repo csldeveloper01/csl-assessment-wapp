@@ -72,7 +72,7 @@ class CandidateAssessmentAuthentication(BaseAuthentication):
         attempt_id = data.get("attempt_id")
 
         try:
-            candidate = Candidate.objects.select_related("college_ref").get(id=candidate_id)
+            candidate = Candidate.objects.get(id=candidate_id)
         except Candidate.DoesNotExist:
             raise exceptions.AuthenticationFailed("Candidate identity not found.")
 
@@ -83,3 +83,27 @@ class CandidateAssessmentAuthentication(BaseAuthentication):
 
         # Return (candidate, token) as DRF (user, auth) pair
         return (candidate, token)
+
+
+def get_authorized_candidate(request):
+    """
+    Returns candidate from authenticated assessment token or None.
+    """
+    return getattr(request, "candidate", None)
+
+
+def verify_attempt_ownership(request, attempt: AssessmentAttempt):
+    """
+    Verifies that the request's authenticated candidate owns the given attempt.
+    Also verifies against staff / admin credentials.
+    """
+    user = getattr(request, "user", None)
+    if user and getattr(user, "is_authenticated", False) and getattr(user, "is_staff", False):
+        return True
+
+    candidate = get_authorized_candidate(request)
+    if not candidate:
+        return False
+
+    return str(attempt.candidate_id) == str(candidate.id)
+

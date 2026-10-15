@@ -8,7 +8,7 @@ from collections import defaultdict
 from datetime import timedelta
 from django.db import transaction, models
 from django.utils import timezone
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import ValidationError, PermissionDenied, NotFound
 
 from .models import (
     QuestionBank,
@@ -21,6 +21,7 @@ from .models import (
     IntegrityEvent,
     AssessmentAuditLog,
 )
+from .tokens import verify_attempt_ownership
 
 logger = logging.getLogger(__name__)
 
@@ -902,44 +903,58 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
     return attempt
 
 
-@transaction.atomic
-def save_candidate_answer(attempt: AssessmentAttempt, question_order: int, selected_option: str):
+def save_candidate_answer(attempt_or_id, question_order: int, selected_option: str, request=None):
     """
-    Idempotent single answer save. Validates deadline and attempt state.
+    Idempotent single answer save. Validates deadline, attempt state, and candidate ownership.
     Locks attempt row with select_for_update().
+    Accepts either an AssessmentAttempt instance or attempt UUID/ID string.
     """
-    locked_attempt = (
-        AssessmentAttempt.objects.select_for_update()
-        .filter(id=attempt.id)
-        .first()
-    )
-    if not locked_attempt:
-        raise ValidationError({"detail": "Attempt not found."})
+    attempt_id = attempt_or_id.id if isinstance(attempt_or_id, AssessmentAttempt) else attempt_or_id
 
-    if locked_attempt.state != AssessmentAttempt.State.IN_PROGRESS:
-        raise ValidationError({"detail": f"Attempt is not active (state: {locked_attempt.state})."})
+    with transaction.atomic():
+        locked_attempt = (
+            AssessmentAttempt.objects.select_for_update()
+            .filter(id=attempt_id)
+            .first()
+        )
+        if not locked_attempt:
+            raise NotFound("Attempt not found.")
 
-    if locked_attempt.is_expired():
+        if request is not None and not verify_attempt_ownership(request, locked_attempt):
+            raise PermissionDenied("Access forbidden: you do not own this attempt.")
+
+        if locked_attempt.state != AssessmentAttempt.State.IN_PROGRESS:
+            raise ValidationError({"detail": f"Attempt is not active (state: {locked_attempt.state})."})
+
+        if locked_attempt.is_expired():
+            is_expired = True
+        else:
+            is_expired = False
+            selected_clean = selected_option.strip().upper() if selected_option else ""
+            if selected_clean and selected_clean not in ("A", "B", "C", "D"):
+                raise ValidationError({"detail": "Invalid option selected."})
+
+            now = timezone.now()
+            rows_updated = AttemptQuestionSnapshot.objects.filter(
+                attempt=locked_attempt, question_order=question_order
+            ).update(
+                selected_option=selected_clean,
+                answered_at=now,
+                updated_at=now,
+            )
+            if rows_updated == 0:
+                raise ValidationError({"detail": "Invalid question order."})
+
+    if is_expired:
         finalize_assessment_attempt(locked_attempt, final_state=AssessmentAttempt.State.TIMED_OUT)
         raise ValidationError({"detail": "Assessment time has expired."})
 
-    snapshot = (
-        AttemptQuestionSnapshot.objects.select_for_update()
-        .filter(attempt=locked_attempt, question_order=question_order)
-        .first()
+    return AttemptQuestionSnapshot(
+        attempt=locked_attempt,
+        question_order=question_order,
+        selected_option=selected_clean,
+        answered_at=now,
     )
-    if not snapshot:
-        raise ValidationError({"detail": "Invalid question order."})
-
-    selected_clean = selected_option.strip().upper() if selected_option else ""
-    if selected_clean and selected_clean not in ("A", "B", "C", "D"):
-        raise ValidationError({"detail": "Invalid option selected."})
-
-    snapshot.selected_option = selected_clean
-    snapshot.answered_at = timezone.now()
-    snapshot.save(update_fields=["selected_option", "answered_at", "updated_at"])
-
-    return snapshot
 
 
 @transaction.atomic

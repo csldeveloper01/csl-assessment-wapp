@@ -39,32 +39,11 @@ from .services import (
 from .tokens import (
     CandidateAssessmentAuthentication,
     generate_candidate_token,
+    get_authorized_candidate,
+    verify_attempt_ownership,
 )
 
 logger = logging.getLogger(__name__)
-
-
-def get_authorized_candidate(request):
-    """
-    Returns candidate from authenticated assessment token or None.
-    """
-    return getattr(request, "candidate", None)
-
-
-def verify_attempt_ownership(request, attempt: AssessmentAttempt):
-    """
-    Verifies that the request's authenticated candidate owns the given attempt.
-    Also verifies against staff / admin credentials.
-    """
-    user = getattr(request, "user", None)
-    if user and getattr(user, "is_authenticated", False) and getattr(user, "is_staff", False):
-        return True
-
-    candidate = get_authorized_candidate(request)
-    if not candidate:
-        return False
-
-    return str(attempt.candidate_id) == str(candidate.id)
 
 
 class StudentCollegesListView(APIView):
@@ -503,10 +482,6 @@ class SaveAnswerView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, attempt_id):
-        attempt = get_object_or_404(AssessmentAttempt, id=attempt_id)
-        if not verify_attempt_ownership(request, attempt):
-            return Response({"detail": "Access forbidden: you do not own this attempt."}, status=status.HTTP_403_FORBIDDEN)
-
         serializer = AnswerSaveSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -514,7 +489,7 @@ class SaveAnswerView(APIView):
         q_order = serializer.validated_data["question_order"]
         sel_opt = serializer.validated_data.get("selected_option", "")
 
-        snapshot = save_candidate_answer(attempt, q_order, sel_opt)
+        snapshot = save_candidate_answer(attempt_id, q_order, sel_opt, request=request)
         return Response(
             {
                 "question_order": snapshot.question_order,
@@ -647,7 +622,15 @@ class SyncAnswersView(APIView):
         now = timezone.now()
 
         with transaction.atomic():
-            snapshots = {s.question_order: s for s in attempt.question_snapshots.select_for_update().all()}
+            locked_attempt = (
+                AssessmentAttempt.objects.select_for_update()
+                .filter(id=attempt.id)
+                .first()
+            )
+            if not locked_attempt or locked_attempt.state != AssessmentAttempt.State.IN_PROGRESS:
+                return Response({"detail": "Attempt is no longer active."}, status=status.HTTP_400_BAD_REQUEST)
+
+            snapshots = {s.question_order: s for s in locked_attempt.question_snapshots.select_for_update().all()}
             for item in answers:
                 if not isinstance(item, dict):
                     continue
