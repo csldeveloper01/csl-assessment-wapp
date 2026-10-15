@@ -14,6 +14,7 @@ from .models import (
     College,
     Assessment,
     AssessmentAttempt,
+    AttemptQuestionSnapshot,
     QuestionBank,
     AssessmentConfig,
     IntegrityEvent,
@@ -205,6 +206,67 @@ class AdminCollegeDetailView(APIView):
         return Response({"message": f"College '{name}' ({code}) deleted successfully."}, status=status.HTTP_200_OK)
 
 
+class AdminCollegeBulkDeleteView(APIView):
+    """
+    Bulk deletion for college institutions.
+    Deletes colleges with 0 candidate attempts; blocks colleges with existing candidate attempts.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "A non-empty list of college IDs is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_ids = []
+        for raw_id in ids:
+            try:
+                valid_ids.append(int(raw_id))
+            except (ValueError, TypeError):
+                continue
+
+        if not valid_ids:
+            return Response({"detail": "No valid college IDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        deleted_ids = []
+        blocked_colleges = []
+
+        with transaction.atomic():
+            colleges = College.objects.filter(id__in=valid_ids)
+            for c in colleges:
+                active_attempts = AssessmentAttempt.objects.filter(candidate__college_ref=c).count()
+                if active_attempts > 0:
+                    blocked_colleges.append({
+                        "id": c.id,
+                        "name": c.name,
+                        "attempts_count": active_attempts,
+                    })
+                else:
+                    Candidate.objects.filter(college_ref=c).delete()
+                    c.delete()
+                    deleted_ids.append(c.id)
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.COLLEGES_BULK_DELETED,
+            entity_type="COLLEGE",
+            entity_id="BULK",
+            user=request.user,
+            details={"deleted_ids": deleted_ids, "blocked_count": len(blocked_colleges)},
+        )
+
+        msg = f"Deleted {len(deleted_ids)} institution(s)."
+        if blocked_colleges:
+            msg += f" {len(blocked_colleges)} institution(s) could not be deleted because candidate attempts exist. Please deactivate them instead."
+
+        return Response({
+            "message": msg,
+            "deleted_count": len(deleted_ids),
+            "blocked_count": len(blocked_colleges),
+            "deleted_ids": deleted_ids,
+            "blocked_colleges": blocked_colleges,
+        }, status=status.HTTP_200_OK)
+
+
 class AdminCollegeToggleStatusView(APIView):
     permission_classes = [IsCSLAdminUser]
 
@@ -360,6 +422,62 @@ class AdminAssessmentDetailView(APIView):
             )
 
         return Response({"message": f"Assessment '{title}' ({code}) deleted successfully."}, status=status.HTTP_200_OK)
+
+
+class AdminAssessmentBulkDeleteView(APIView):
+    """
+    Bulk deletion / auto-archival for assessments.
+    Assessments with 0 candidate attempts are physically deleted.
+    Assessments with existing candidate attempts are safely archived to protect assessment analytics and candidate results.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "A non-empty list of assessment IDs is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_uuids = []
+        for raw_id in ids:
+            try:
+                valid_uuids.append(uuid.UUID(str(raw_id)))
+            except (ValueError, TypeError):
+                continue
+
+        if not valid_uuids:
+            return Response({"detail": "No valid assessment UUIDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        deleted_ids = []
+        archived_ids = []
+
+        with transaction.atomic():
+            assessments = Assessment.objects.filter(id__in=valid_uuids)
+            for a in assessments:
+                if a.attempts.exists():
+                    archive_assessment(a, user=request.user)
+                    archived_ids.append(str(a.id))
+                else:
+                    a.eligible_colleges.clear()
+                    a.questions.clear()
+                    a_id_str = str(a.id)
+                    a.delete()
+                    deleted_ids.append(a_id_str)
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.ASSESSMENTS_BULK_DELETED,
+            entity_type="ASSESSMENT",
+            entity_id="BULK",
+            user=request.user,
+            details={"deleted_count": len(deleted_ids), "archived_count": len(archived_ids)},
+        )
+
+        return Response({
+            "message": f"Processed {len(deleted_ids) + len(archived_ids)} assessment(s): {len(deleted_ids)} deleted, {len(archived_ids)} archived due to attempt history.",
+            "deleted_count": len(deleted_ids),
+            "archived_count": len(archived_ids),
+            "deleted_ids": deleted_ids,
+            "archived_ids": archived_ids,
+        }, status=status.HTTP_200_OK)
 
 
 def format_validation_error_response(e: Exception) -> Response:
@@ -776,6 +894,106 @@ class AdminCandidateDetailView(APIView):
         serializer = AdminCandidateDetailSerializer(candidate)
         return Response(serializer.data)
 
+    def delete(self, request, candidate_id):
+        candidate = get_object_or_404(Candidate, id=candidate_id)
+        name = candidate.full_name
+        reg_no = candidate.register_number
+        has_attempts = candidate.attempts.exists()
+
+        with transaction.atomic():
+            if has_attempts:
+                # Anonymize PII and deactivate to preserve historical audit / analytics integrity
+                anon_id = candidate.id.hex[:8]
+                candidate.full_name = f"[Deleted Candidate {anon_id}]"
+                candidate.email = f"deleted_{anon_id}@anonymized.csl"
+                candidate.phone_number = ""
+                candidate.is_active = False
+                candidate.save(update_fields=["full_name", "email", "phone_number", "is_active", "updated_at"])
+
+                log_assessment_audit(
+                    action=AssessmentAuditLog.Action.CANDIDATE_ANONYMIZED,
+                    entity_type="CANDIDATE",
+                    entity_id=str(candidate_id),
+                    user=request.user,
+                    details={"action": "ANONYMIZED", "original_reg_no": reg_no},
+                )
+
+                return Response({
+                    "message": f"Candidate '{name}' ({reg_no}) has existing attempt records. To preserve assessment audit integrity, candidate PII was anonymized and the account deactivated.",
+                    "action": "ANONYMIZED",
+                    "id": str(candidate_id),
+                }, status=status.HTTP_200_OK)
+            else:
+                candidate.delete()
+                log_assessment_audit(
+                    action=AssessmentAuditLog.Action.CANDIDATE_DELETED,
+                    entity_type="CANDIDATE",
+                    entity_id=str(candidate_id),
+                    user=request.user,
+                    details={"action": "DELETED", "name": name, "reg_no": reg_no},
+                )
+                return Response({
+                    "message": f"Candidate '{name}' ({reg_no}) was permanently deleted.",
+                    "action": "DELETED",
+                    "id": str(candidate_id),
+                }, status=status.HTTP_200_OK)
+
+
+class AdminCandidateBulkDeleteView(APIView):
+    """
+    Bulk deletion / safe anonymization for candidate records.
+    Permanently deletes candidates with 0 attempts; anonymizes PII and deactivates candidates with attempt history.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "A non-empty list of candidate IDs is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_uuids = []
+        for raw_id in ids:
+            try:
+                valid_uuids.append(uuid.UUID(str(raw_id)))
+            except (ValueError, TypeError):
+                continue
+
+        if not valid_uuids:
+            return Response({"detail": "No valid candidate UUIDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        deleted_count = 0
+        anonymized_count = 0
+
+        with transaction.atomic():
+            candidates = Candidate.objects.filter(id__in=valid_uuids)
+            for cand in candidates:
+                if cand.attempts.exists():
+                    anon_id = cand.id.hex[:8]
+                    cand.full_name = f"[Deleted Candidate {anon_id}]"
+                    cand.email = f"deleted_{anon_id}@anonymized.csl"
+                    cand.phone_number = ""
+                    cand.is_active = False
+                    cand.save(update_fields=["full_name", "email", "phone_number", "is_active", "updated_at"])
+                    anonymized_count += 1
+                else:
+                    cand.delete()
+                    deleted_count += 1
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.CANDIDATES_BULK_DELETED,
+            entity_type="CANDIDATE",
+            entity_id="BULK",
+            user=request.user,
+            details={"deleted_count": deleted_count, "anonymized_count": anonymized_count},
+        )
+
+        return Response({
+            "message": f"Processed {deleted_count + anonymized_count} candidate(s): {deleted_count} deleted, {anonymized_count} anonymized due to attempt history.",
+            "deleted_count": deleted_count,
+            "anonymized_count": anonymized_count,
+            "total_processed": deleted_count + anonymized_count,
+        }, status=status.HTTP_200_OK)
+
 
 class AdminCandidateToggleStatusView(APIView):
     permission_classes = [IsCSLAdminUser]
@@ -800,10 +1018,22 @@ class AdminQuestionListView(APIView):
     permission_classes = [IsCSLAdminUser]
 
     def get(self, request):
-        queryset = QuestionBank.objects.all().order_by("-id").prefetch_related("assigned_assessments")
-        section = request.query_params.get("section_type", "").strip().upper()
-        if section in [QuestionBank.SectionType.APTITUDE, QuestionBank.SectionType.CODING]:
-            queryset = queryset.filter(section_type=section)
+        queryset = (
+            QuestionBank.objects.all()
+            .order_by("-id")
+            .select_related("section")
+            .prefetch_related("assigned_assessments")
+        )
+        section = request.query_params.get("section_type", "").strip()
+        if section:
+            sec_obj = (
+                AssessmentSection.objects.filter(code__iexact=section).first()
+                or AssessmentSection.objects.filter(name__iexact=section).first()
+            )
+            if sec_obj:
+                queryset = queryset.filter(Q(section=sec_obj) | Q(section_type__iexact=sec_obj.code))
+            else:
+                queryset = queryset.filter(section_type__iexact=section)
 
         category = request.query_params.get("category", "").strip()
         if category:
@@ -934,9 +1164,77 @@ class AdminQuestionDetailView(APIView):
 
     def delete(self, request, pk):
         question = get_object_or_404(QuestionBank, pk=pk)
-        question.is_active = False
-        question.save(update_fields=["is_active"])
-        return Response({"message": "Question deactivated."})
+        has_attempts = question.attempt_snapshots.exists()
+
+        if has_attempts:
+            question.is_active = False
+            question.save(update_fields=["is_active"])
+            question.assigned_assessments.clear()
+            return Response({
+                "message": f"Question #{pk} is referenced by candidate attempts and was safely deactivated and detached from active assessment pools.",
+                "action": "DEACTIVATED",
+                "deleted": False,
+                "archived": True,
+                "id": pk,
+            }, status=status.HTTP_200_OK)
+        else:
+            question.assigned_assessments.clear()
+            question.delete()
+            return Response({
+                "message": f"Question #{pk} deleted successfully.",
+                "action": "DELETED",
+                "deleted": True,
+                "archived": False,
+                "id": pk,
+            }, status=status.HTTP_200_OK)
+
+
+class AdminQuestionBulkDeleteView(APIView):
+    """
+    Bulk deletion / safe archival for question pool management.
+    Checks references to historical attempts; permanently deletes unreferenced questions
+    and safely deactivates referenced questions within a single atomic transaction.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "A non-empty list of question IDs is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_ids = []
+        for raw_id in ids:
+            try:
+                valid_ids.append(int(raw_id))
+            except (ValueError, TypeError):
+                continue
+
+        if not valid_ids:
+            return Response({"detail": "No valid question IDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        deleted_ids = []
+        deactivated_ids = []
+
+        with transaction.atomic():
+            questions = QuestionBank.objects.filter(id__in=valid_ids)
+            for q in questions:
+                if q.attempt_snapshots.exists():
+                    q.is_active = False
+                    q.save(update_fields=["is_active"])
+                    q.assigned_assessments.clear()
+                    deactivated_ids.append(q.id)
+                else:
+                    q.assigned_assessments.clear()
+                    q.delete()
+                    deleted_ids.append(q.id)
+
+        return Response({
+            "message": f"Processed {len(deleted_ids) + len(deactivated_ids)} question(s): {len(deleted_ids)} deleted, {len(deactivated_ids)} safely archived.",
+            "deleted_count": len(deleted_ids),
+            "deactivated_count": len(deactivated_ids),
+            "deleted_ids": deleted_ids,
+            "deactivated_ids": deactivated_ids,
+        }, status=status.HTTP_200_OK)
 
 
 class AdminQuestionToggleView(APIView):
@@ -1134,9 +1432,15 @@ class AdminSectionDetailView(APIView):
 
     def put(self, request, pk):
         section = self.get_object(pk)
+        old_code = section.code
         serializer = AdminAssessmentSectionSerializer(section, data=request.data, partial=True)
         if serializer.is_valid():
-            section = serializer.save()
+            with transaction.atomic():
+                section = serializer.save()
+                if old_code != section.code:
+                    QuestionBank.objects.filter(
+                        Q(section=section) | Q(section_type__iexact=old_code)
+                    ).update(section=section, section_type=section.code)
             return Response(AdminAssessmentSectionSerializer(section).data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1159,6 +1463,68 @@ class AdminSectionDetailView(APIView):
             {"message": f"Section '{section_name}' deleted successfully."},
             status=status.HTTP_200_OK,
         )
+
+
+class AdminSectionBulkDeleteView(APIView):
+    """
+    Bulk deletion for reusable assessment sections.
+    Safely enforces referential integrity: blocks deletion of sections referenced by questions or assessments.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "A non-empty list of section IDs is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_ids = []
+        for raw_id in ids:
+            try:
+                valid_ids.append(int(raw_id))
+            except (ValueError, TypeError):
+                continue
+
+        if not valid_ids:
+            return Response({"detail": "No valid section IDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        deleted_ids = []
+        blocked_sections = []
+
+        with transaction.atomic():
+            sections = AssessmentSection.objects.filter(id__in=valid_ids)
+            for s in sections:
+                q_count = QuestionBank.objects.filter(Q(section=s) | Q(section_type=s.code)).count()
+                a_count = s.assessment_allocations.count()
+                if q_count > 0 or a_count > 0:
+                    blocked_sections.append({
+                        "id": s.id,
+                        "name": s.name,
+                        "questions_count": q_count,
+                        "assessments_count": a_count,
+                    })
+                else:
+                    deleted_ids.append(s.id)
+                    s.delete()
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.SECTIONS_BULK_DELETED,
+            entity_type="SECTION",
+            entity_id="BULK",
+            user=request.user,
+            details={"deleted_ids": deleted_ids, "blocked_count": len(blocked_sections)},
+        )
+
+        msg = f"Deleted {len(deleted_ids)} section(s)."
+        if blocked_sections:
+            msg += f" {len(blocked_sections)} section(s) could not be deleted because questions or assessments depend on them. Please deactivate them instead."
+
+        return Response({
+            "message": msg,
+            "deleted_count": len(deleted_ids),
+            "blocked_count": len(blocked_sections),
+            "deleted_ids": deleted_ids,
+            "blocked_sections": blocked_sections,
+        }, status=status.HTTP_200_OK)
 
 
 class AdminConfigView(APIView):
@@ -1250,6 +1616,71 @@ class AdminAttemptReviewView(APIView):
             return Response({"message": "Attempt flagged for review."})
 
         return Response({"detail": "Invalid action. Use CLEAR_FLAG or FLAG."}, status=status.HTTP_400_BAD_REQUEST)
+
+    def delete(self, request, attempt_id):
+        attempt = get_object_or_404(AssessmentAttempt, id=attempt_id)
+        cand_name = attempt.candidate.full_name
+        with transaction.atomic():
+            # Cascade deletion of snapshots and integrity events
+            attempt.question_snapshots.all().delete()
+            attempt.integrity_events.all().delete()
+            attempt.delete()
+
+            log_assessment_audit(
+                action=AssessmentAuditLog.Action.ATTEMPT_DELETED,
+                entity_type="ATTEMPT",
+                entity_id=str(attempt_id),
+                user=request.user,
+                details={"candidate_name": cand_name},
+            )
+
+        return Response({
+            "message": f"Assessment attempt for '{cand_name}' was deleted successfully.",
+            "id": str(attempt_id),
+        }, status=status.HTTP_200_OK)
+
+
+class AdminAttemptBulkDeleteView(APIView):
+    """
+    Bulk deletion for test, invalid, or obsolete candidate assessment attempts.
+    Cascades question snapshots and proctoring integrity events in a single transaction.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "A non-empty list of attempt IDs is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_uuids = []
+        for raw_id in ids:
+            try:
+                valid_uuids.append(uuid.UUID(str(raw_id)))
+            except (ValueError, TypeError):
+                continue
+
+        if not valid_uuids:
+            return Response({"detail": "No valid attempt UUIDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            attempts = AssessmentAttempt.objects.filter(id__in=valid_uuids)
+            count = attempts.count()
+            AttemptQuestionSnapshot.objects.filter(attempt__in=attempts).delete()
+            IntegrityEvent.objects.filter(attempt__in=attempts).delete()
+            attempts.delete()
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.ATTEMPTS_BULK_DELETED,
+            entity_type="ATTEMPT",
+            entity_id="BULK",
+            user=request.user,
+            details={"deleted_count": count},
+        )
+
+        return Response({
+            "message": f"Successfully deleted {count} assessment attempt(s) and their associated snapshots and logs.",
+            "deleted_count": count,
+        }, status=status.HTTP_200_OK)
 
 
 # ==============================================================================
@@ -1357,6 +1788,64 @@ class AdminIntegrityEventReviewActionView(APIView):
             "message": "Integrity event review status updated successfully.",
         })
 
+    def delete(self, request, pk):
+        event = get_object_or_404(IntegrityEvent, pk=pk)
+        ev_type = event.event_type
+        event.delete()
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.INTEGRITY_EVENT_DELETED,
+            entity_type="INTEGRITY_EVENT",
+            entity_id=str(pk),
+            user=request.user,
+            details={"event_type": ev_type},
+        )
+
+        return Response({
+            "message": f"Integrity event #{pk} was deleted successfully.",
+            "id": pk,
+        }, status=status.HTTP_200_OK)
+
+
+class AdminIntegrityEventBulkDeleteView(APIView):
+    """
+    Bulk deletion for proctoring integrity audit events.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request):
+        ids = request.data.get("ids", [])
+        if not ids or not isinstance(ids, list):
+            return Response({"detail": "A non-empty list of integrity event IDs is required."}, status=status.HTTP_400_BAD_REQUEST)
+
+        valid_ids = []
+        for raw_id in ids:
+            try:
+                valid_ids.append(int(raw_id))
+            except (ValueError, TypeError):
+                continue
+
+        if not valid_ids:
+            return Response({"detail": "No valid event IDs provided."}, status=status.HTTP_400_BAD_REQUEST)
+
+        with transaction.atomic():
+            events = IntegrityEvent.objects.filter(id__in=valid_ids)
+            count = events.count()
+            events.delete()
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.INTEGRITY_EVENTS_BULK_DELETED,
+            entity_type="INTEGRITY_EVENT",
+            entity_id="BULK",
+            user=request.user,
+            details={"deleted_count": count},
+        )
+
+        return Response({
+            "message": f"Successfully deleted {count} integrity event(s).",
+            "deleted_count": count,
+        }, status=status.HTTP_200_OK)
+
 
 class AdminGlobalAuditLogsView(APIView):
     permission_classes = [IsCSLAdminUser]
@@ -1455,3 +1944,95 @@ class AdminUserManagementView(APIView):
             },
             status=status.HTTP_201_CREATED,
         )
+
+
+class AdminUserDetailView(APIView):
+    """
+    Administrator account actions: toggle active status and safe deletion.
+    Enforces strict security rules:
+    - Only superusers can delete or toggle admin users.
+    - An admin cannot delete their own account.
+    - The last remaining active superuser cannot be deleted or deactivated.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def post(self, request, user_id):
+        """Toggle user account active status."""
+        from apps.users.models import User
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only active superusers can manage administrative account statuses."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        target_user = get_object_or_404(User, id=user_id)
+        if target_user.id == request.user.id:
+            return Response(
+                {"detail": "You cannot change the active status of your own account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if target_user.is_superuser and target_user.is_active:
+            active_superusers = User.objects.filter(is_superuser=True, is_active=True).exclude(id=target_user.id).count()
+            if active_superusers == 0:
+                return Response(
+                    {"detail": "Cannot deactivate the last remaining active superuser."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        target_user.is_active = not target_user.is_active
+        target_user.save(update_fields=["is_active"])
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.USER_STATUS_TOGGLED,
+            entity_type="ADMIN_USER",
+            entity_id=str(target_user.id),
+            user=request.user,
+            details={"is_active": target_user.is_active, "email": target_user.email},
+        )
+
+        return Response({
+            "id": target_user.id,
+            "is_active": target_user.is_active,
+            "message": f"User '{target_user.email}' is now {'active' if target_user.is_active else 'inactive'}.",
+        }, status=status.HTTP_200_OK)
+
+    def delete(self, request, user_id):
+        """Permanently delete an administrative account."""
+        from apps.users.models import User
+        if not request.user.is_superuser:
+            return Response(
+                {"detail": "Only active superusers can delete administrative accounts."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        target_user = get_object_or_404(User, id=user_id)
+        if target_user.id == request.user.id:
+            return Response(
+                {"detail": "Security violation: You cannot delete your own administrative account."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if target_user.is_superuser:
+            remaining_superusers = User.objects.filter(is_superuser=True).exclude(id=target_user.id).count()
+            if remaining_superusers == 0:
+                return Response(
+                    {"detail": "Security violation: Cannot delete the last remaining superuser account."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        email = target_user.email
+        target_user.delete()
+
+        log_assessment_audit(
+            action=AssessmentAuditLog.Action.USER_DELETED,
+            entity_type="ADMIN_USER",
+            entity_id=str(user_id),
+            user=request.user,
+            details={"email": email},
+        )
+
+        return Response({
+            "message": f"Administrator account '{email}' was deleted successfully.",
+            "id": user_id,
+        }, status=status.HTTP_200_OK)

@@ -6,6 +6,7 @@ import {
   createAdminAssessment,
   updateAdminAssessment,
   deleteAdminAssessment,
+  bulkDeleteAdminAssessments,
   prepareAdminAssessment,
   openAdminAssessment,
   closeAdminAssessment,
@@ -45,6 +46,10 @@ export function AdminAssessmentsView({
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+
+  // Bulk Selection & Deletion State
+  const [selectedAssessmentIds, setSelectedAssessmentIds] = useState<string[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Modals state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -289,6 +294,7 @@ export function AdminAssessmentsView({
       const res = await deleteAdminAssessment(assessment.id);
       setActionMessage({ text: res.message, type: 'success' });
       setAssessments((prev) => prev.filter((a) => a.id !== assessment.id));
+      setSelectedAssessmentIds((prev) => prev.filter((id) => id !== assessment.id));
       if (selectedAssessment?.id === assessment.id) {
         setShowDetailModal(false);
         setSelectedAssessment(null);
@@ -297,6 +303,42 @@ export function AdminAssessmentsView({
       const msg = formatApiError(err, 'Failed to delete assessment.');
       setActionMessage({ text: msg, type: 'error' });
       alert(`Delete Error: ${msg}`);
+    }
+  };
+
+  const handleToggleSelectAllAssessments = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedAssessmentIds(assessments.map((a) => a.id));
+    } else {
+      setSelectedAssessmentIds([]);
+    }
+  };
+
+  const handleToggleSelectAssessment = (id: string) => {
+    setSelectedAssessmentIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleBulkDeleteAssessments = async () => {
+    if (selectedAssessmentIds.length === 0) return;
+    const confirmed = window.confirm(
+      `Are you sure you want to delete ${selectedAssessmentIds.length} selected assessment(s)?\n\nAssessments with existing candidate attempts will be safely archived instead of permanently deleted to protect candidate records.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setBulkDeleting(true);
+      const res = await bulkDeleteAdminAssessments(selectedAssessmentIds);
+      setActionMessage({ text: res.message, type: 'success' });
+      setSelectedAssessmentIds([]);
+      fetchAssessments();
+    } catch (err: any) {
+      const msg = formatApiError(err, 'Failed to delete assessments.');
+      setActionMessage({ text: msg, type: 'error' });
+      alert(`Delete Error: ${msg}`);
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -779,6 +821,84 @@ export function AdminAssessmentsView({
         </select>
       </div>
 
+      {/* ─── BULK ACTIONS BAR (DURING SELECTION) ───────────────────── */}
+      {selectedAssessmentIds.length > 0 && (
+        <div
+          style={{
+            backgroundColor: '#EFF6FF',
+            border: '1.5px solid #BFDBFE',
+            borderRadius: '12px',
+            padding: '12px 20px',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            boxShadow: '0 2px 8px rgba(20, 85, 184, 0.08)',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span
+              style={{
+                backgroundColor: '#1455B8',
+                color: '#FFFFFF',
+                borderRadius: '6px',
+                padding: '3px 9px',
+                fontSize: '12px',
+                fontWeight: 800,
+              }}
+            >
+              {selectedAssessmentIds.length} Selected
+            </span>
+            <span style={{ fontSize: '13px', color: '#1E3A8A', fontWeight: 600 }}>
+              Bulk operations for assessments. Rounds with existing candidate attempts will be safely archived.
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              onClick={() => setSelectedAssessmentIds([])}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: '#FFFFFF',
+                border: '1px solid #CBD5E1',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: 600,
+                color: '#475569',
+                cursor: 'pointer',
+              }}
+            >
+              Deselect All
+            </button>
+            <button
+              onClick={handleBulkDeleteAssessments}
+              disabled={bulkDeleting}
+              style={{
+                padding: '6px 14px',
+                backgroundColor: '#DC2626',
+                color: '#FFFFFF',
+                border: 'none',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: 700,
+                cursor: bulkDeleting ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              <span>{bulkDeleting ? 'Deleting...' : `Delete / Archive Selected (${selectedAssessmentIds.length})`}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* ─── ASSESSMENTS TABLE ──────────────────────────────────────── */}
       <div style={{ backgroundColor: '#FFFFFF', borderRadius: '10px', border: '1px solid #E2E8F0', overflowX: 'auto', boxShadow: '0 1px 3px rgba(0,0,0,0.02)' }}>
         {loading ? (
@@ -794,6 +914,18 @@ export function AdminAssessmentsView({
           <table style={{ width: '100%', minWidth: '1100px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '14px' }}>
             <thead>
               <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
+                <th style={{ padding: '12px 16px', width: '40px', textAlign: 'center' }}>
+                  <input
+                    type="checkbox"
+                    checked={assessments.length > 0 && selectedAssessmentIds.length === assessments.length}
+                    ref={(el) => {
+                      if (el) el.indeterminate = selectedAssessmentIds.length > 0 && selectedAssessmentIds.length < assessments.length;
+                    }}
+                    onChange={handleToggleSelectAllAssessments}
+                    style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: '#1455B8' }}
+                    title="Select / Deselect All Assessments"
+                  />
+                </th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', width: '120px' }}>CODE</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569' }}>ASSESSMENT TITLE</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>STATUS</th>
@@ -804,8 +936,31 @@ export function AdminAssessmentsView({
               </tr>
             </thead>
             <tbody>
-              {assessments.map((a) => (
-                <tr key={a.id} style={{ borderBottom: '1px solid #F1F5F9', transition: 'background-color 0.15s' }}>
+              {assessments.map((a) => {
+                const isSelected = selectedAssessmentIds.includes(a.id);
+                return (
+                <tr
+                  key={a.id}
+                  style={{
+                    borderBottom: '1px solid #F1F5F9',
+                    backgroundColor: isSelected ? '#F0F7FF' : 'transparent',
+                    transition: 'background-color 0.15s',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isSelected) e.currentTarget.style.backgroundColor = '#F8FAFC';
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
+                  }}
+                >
+                  <td style={{ padding: '14px 16px', textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => handleToggleSelectAssessment(a.id)}
+                      style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: '#1455B8' }}
+                    />
+                  </td>
                   <td style={{ padding: '14px 16px' }}>
                     <span
                       onClick={() => handleOpenDetail(a)}
@@ -1063,7 +1218,8 @@ export function AdminAssessmentsView({
                     </div>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         )}

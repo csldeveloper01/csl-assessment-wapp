@@ -1,4 +1,5 @@
 import uuid
+from datetime import timedelta
 from django.db import models
 from django.utils import timezone
 from django.core.exceptions import ValidationError
@@ -501,6 +502,16 @@ class AssessmentAttempt(models.Model):
     is_flagged = models.BooleanField(default=False)
     flag_reason = models.TextField(blank=True, default="")
     
+    # Connection Health & Disconnection Grace Policy
+    last_heartbeat = models.DateTimeField(null=True, blank=True)
+    is_paused = models.BooleanField(default=False)
+    paused_at = models.DateTimeField(null=True, blank=True)
+    total_paused_seconds = models.PositiveIntegerField(default=0)
+    max_disconnection_grace_seconds = models.PositiveIntegerField(
+        default=600,
+        help_text="Maximum cumulative grace extension allowed for genuine network outages",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -509,15 +520,59 @@ class AssessmentAttempt(models.Model):
         indexes = [
             models.Index(fields=["candidate", "state"]),
             models.Index(fields=["state", "deadline"]),
+            models.Index(fields=["is_paused", "state"]),
         ]
 
     def __str__(self):
         return f"{self.candidate.full_name} - {self.state} ({self.total_score}/50)"
 
     def is_expired(self):
-        if self.deadline and timezone.now() > self.deadline:
-            return True
-        return False
+        if not self.deadline:
+            return False
+        now = timezone.now()
+        if self.is_paused and self.paused_at:
+            remaining_grace = max(0, self.max_disconnection_grace_seconds - self.total_paused_seconds)
+            if (now - self.paused_at).total_seconds() > remaining_grace:
+                return True
+            return False
+        return now > self.deadline
+
+    def get_remaining_seconds(self):
+        if not self.deadline:
+            return 0
+        now = timezone.now()
+        if self.is_paused and self.paused_at:
+            diff = (self.deadline - self.paused_at).total_seconds()
+            return max(0, int(diff))
+        diff = (self.deadline - now).total_seconds()
+        return max(0, int(diff))
+
+    def pause_attempt(self, at_time=None):
+        if self.state != self.State.IN_PROGRESS or self.is_paused:
+            return False
+        now = at_time or timezone.now()
+        self.is_paused = True
+        self.paused_at = now
+        self.save(update_fields=["is_paused", "paused_at", "updated_at"])
+        return True
+
+    def resume_attempt(self, at_time=None):
+        if not self.is_paused or not self.paused_at:
+            return 0
+        now = at_time or timezone.now()
+        outage_duration = int((now - self.paused_at).total_seconds())
+        remaining_grace = max(0, self.max_disconnection_grace_seconds - self.total_paused_seconds)
+        credited_seconds = min(max(0, outage_duration), remaining_grace)
+
+        if credited_seconds > 0:
+            self.deadline = self.deadline + timedelta(seconds=credited_seconds)
+            self.total_paused_seconds += credited_seconds
+
+        self.is_paused = False
+        self.paused_at = None
+        self.last_heartbeat = now
+        self.save(update_fields=["is_paused", "paused_at", "deadline", "total_paused_seconds", "last_heartbeat", "updated_at"])
+        return credited_seconds
 
 
 class AttemptQuestionSnapshot(models.Model):
@@ -623,6 +678,18 @@ class AssessmentAuditLog(models.Model):
         QUESTIONS_ASSIGNED = "QUESTIONS_ASSIGNED", "Questions Assigned to Assessment Pool"
         RESULTS_RELEASED = "RESULTS_RELEASED", "Assessment Results Released"
         RESULTS_UNRELEASED = "RESULTS_UNRELEASED", "Assessment Results Withheld"
+        CANDIDATE_ANONYMIZED = "CANDIDATE_ANONYMIZED", "Candidate Anonymized"
+        CANDIDATE_DELETED = "CANDIDATE_DELETED", "Candidate Deleted"
+        CANDIDATES_BULK_DELETED = "CANDIDATES_BULK_DELETED", "Candidates Bulk Deleted"
+        COLLEGES_BULK_DELETED = "COLLEGES_BULK_DELETED", "Colleges Bulk Deleted"
+        ASSESSMENTS_BULK_DELETED = "ASSESSMENTS_BULK_DELETED", "Assessments Bulk Deleted"
+        SECTIONS_BULK_DELETED = "SECTIONS_BULK_DELETED", "Sections Bulk Deleted"
+        ATTEMPT_DELETED = "ATTEMPT_DELETED", "Attempt Deleted"
+        ATTEMPTS_BULK_DELETED = "ATTEMPTS_BULK_DELETED", "Attempts Bulk Deleted"
+        INTEGRITY_EVENT_DELETED = "INTEGRITY_EVENT_DELETED", "Integrity Event Deleted"
+        INTEGRITY_EVENTS_BULK_DELETED = "INTEGRITY_EVENTS_BULK_DELETED", "Integrity Events Bulk Deleted"
+        USER_DELETED = "USER_DELETED", "User Deleted"
+        USER_STATUS_TOGGLED = "USER_STATUS_TOGGLED", "User Status Changed"
 
     action = models.CharField(max_length=40, choices=Action.choices, db_index=True)
     entity_type = models.CharField(max_length=30, db_index=True, help_text="ASSESSMENT, COLLEGE, CANDIDATE")

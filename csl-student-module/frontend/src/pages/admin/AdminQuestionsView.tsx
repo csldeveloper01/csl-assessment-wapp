@@ -5,6 +5,8 @@ import {
   updateAdminQuestion,
   toggleAdminQuestion,
   bulkUpdateAdminQuestions,
+  deleteAdminQuestion,
+  bulkDeleteAdminQuestions,
   importAdminQuestionsCSV,
   getAdminAssessments,
   getAdminSections,
@@ -16,6 +18,92 @@ import { AdminQuestionEditorModal } from './AdminQuestionEditorModal';
 
 interface AdminQuestionsViewProps {
   initialAssessmentId?: string;
+}
+
+/**
+ * Resolves the display name for a question's section.
+ * Priority:
+ * 1. Direct section_name from the API serializer (e.g. "Section A", "Coding Fundamentals", "Aptitude").
+ * 2. Matched name from loaded sections by section_id.
+ * 3. Matched name from loaded sections by section_type (section code, e.g. "SECA" -> "Section A").
+ * 4. Standard fallback labels for legacy codes: "APTITUDE" -> "Aptitude", "CODING" -> "Coding".
+ * 5. Clean custom code string if not matched.
+ * 6. "Unassigned" fallback when no section exists.
+ */
+function getQuestionSectionDisplay(q: AdminQuestion, sectionsList: AdminSection[]): string {
+  if (q.section_name && q.section_name.trim()) {
+    return q.section_name.trim();
+  }
+
+  if (q.section_id) {
+    const matchedById = sectionsList.find((s) => s.id === q.section_id);
+    if (matchedById?.name?.trim()) {
+      return matchedById.name.trim();
+    }
+  }
+
+  if (q.section_type && q.section_type.trim()) {
+    const rawCode = q.section_type.trim();
+    const upperCode = rawCode.toUpperCase();
+    const matchedByCode = sectionsList.find((s) => s.code.toUpperCase() === upperCode);
+    if (matchedByCode?.name?.trim()) {
+      return matchedByCode.name.trim();
+    }
+
+    if (upperCode === 'APTITUDE') return 'Aptitude';
+    if (upperCode === 'CODING') return 'Coding';
+
+    return rawCode;
+  }
+
+  return 'Unassigned';
+}
+
+/**
+ * Returns distinct badge styles for question sections:
+ * - Unassigned: Slate / Gray
+ * - Coding: Emerald / Green
+ * - Aptitude: Blue
+ * - Custom Sections: Purple / Indigo (distinguishable from default sections)
+ */
+function getSectionBadgeStyle(sectionDisplay: string, sectionType?: string): {
+  backgroundColor: string;
+  color: string;
+  border: string;
+} {
+  const norm = (sectionDisplay || '').toLowerCase();
+  const normType = (sectionType || '').toLowerCase();
+
+  if (norm === 'unassigned' || !sectionDisplay) {
+    return {
+      backgroundColor: '#F1F5F9',
+      color: '#64748B',
+      border: '1px solid #CBD5E1',
+    };
+  }
+
+  if (norm.includes('coding') || normType === 'coding') {
+    return {
+      backgroundColor: '#ECFDF5',
+      color: '#059669',
+      border: '1px solid #A7F3D0',
+    };
+  }
+
+  if (norm.includes('aptitude') || normType === 'aptitude') {
+    return {
+      backgroundColor: '#EFF6FF',
+      color: '#1455B8',
+      border: '1px solid #BFDBFE',
+    };
+  }
+
+  // Custom sections: distinctive purple badge
+  return {
+    backgroundColor: '#F5F3FF',
+    color: '#6D28D9',
+    border: '1px solid #DDD6FE',
+  };
 }
 
 export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewProps) {
@@ -88,7 +176,24 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
         search: search || undefined,
         assessment_id: assessmentFilter || undefined,
       });
-      setQuestions(data);
+
+      // Ensure frontend filter matches custom sections accurately
+      const filteredData = sectionFilter
+        ? data.filter((q) => {
+            const filterUpper = sectionFilter.trim().toUpperCase();
+            const qType = (q.section_type || '').trim().toUpperCase();
+            const qName = (q.section_name || '').trim().toUpperCase();
+            const matchedSec = sections.find((s) => s.code.toUpperCase() === filterUpper);
+            const targetSecName = matchedSec?.name.trim().toUpperCase();
+            return (
+              qType === filterUpper ||
+              qName === filterUpper ||
+              (targetSecName && qName === targetSecName)
+            );
+          })
+        : data;
+
+      setQuestions(filteredData);
       setCurrentPage(1);
     } catch {
       alert('Failed to load question bank.');
@@ -198,6 +303,41 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
       loadQuestions();
     } catch {
       alert('Failed to apply bulk status update.');
+    } finally {
+      setBulkUpdating(false);
+    }
+  };
+
+  const handleDeleteQuestion = async (q: AdminQuestion) => {
+    const confirmMsg = `Are you sure you want to delete question #${q.id}?\n\nIf candidates have already taken assessments referencing this question, it will be safely archived to preserve attempt history.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    try {
+      const res = await deleteAdminQuestion(q.id, {
+        assessment_id: assessmentFilter || undefined,
+      });
+      alert(res.message || 'Question processed successfully.');
+      loadQuestions();
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { error?: string; detail?: string } } };
+      alert(axErr?.response?.data?.error || axErr?.response?.data?.detail || 'Failed to delete question.');
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    const confirmMsg = `Are you sure you want to delete ${selectedIds.length} selected question(s)?\n\nReferenced questions will be safely archived to protect candidate attempt history.`;
+    if (!window.confirm(confirmMsg)) return;
+
+    setBulkUpdating(true);
+    try {
+      const res = await bulkDeleteAdminQuestions(selectedIds, assessmentFilter || undefined);
+      alert(res.message || `Processed ${res.deleted_count} deleted and ${res.archived_count} archived.`);
+      setSelectedIds([]);
+      loadQuestions();
+    } catch (err: unknown) {
+      const axErr = err as { response?: { data?: { error?: string; detail?: string } } };
+      alert(axErr?.response?.data?.error || axErr?.response?.data?.detail || 'Failed to delete selected questions.');
     } finally {
       setBulkUpdating(false);
     }
@@ -1054,9 +1194,29 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                   Question Pool Composition: {selectedAssessment.title}
                 </div>
                 <div style={{ fontSize: '12px', color: '#64748B' }}>
-                  Exam Requirement: <strong>{selectedAssessment.aptitude_count} Aptitude</strong> +{' '}
-                  <strong>{selectedAssessment.coding_count} Coding</strong> questions (Total:{' '}
-                  <strong>{selectedAssessment.aptitude_count + selectedAssessment.coding_count}</strong>)
+                  {selectedAssessment.sections && selectedAssessment.sections.length > 0 ? (
+                    <>
+                      Exam Requirement:{' '}
+                      {selectedAssessment.sections.map((sec, idx) => (
+                        <span key={sec.section_id || idx}>
+                          <strong>
+                            {sec.question_count} {sec.section_name || sec.section_code || 'Section'}
+                          </strong>
+                          {idx < (selectedAssessment.sections?.length || 0) - 1 ? ' + ' : ''}
+                        </span>
+                      ))}{' '}
+                      (Total:{' '}
+                      <strong>
+                        {selectedAssessment.sections.reduce((acc, s) => acc + (s.question_count || 0), 0)}
+                      </strong>)
+                    </>
+                  ) : (
+                    <>
+                      Exam Requirement: <strong>{selectedAssessment.aptitude_count} Aptitude</strong> +{' '}
+                      <strong>{selectedAssessment.coding_count} Coding</strong> questions (Total:{' '}
+                      <strong>{selectedAssessment.aptitude_count + selectedAssessment.coding_count}</strong>)
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -1064,8 +1224,31 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                 <div style={{ textAlign: 'right' }}>
                   <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 600 }}>Available in Pool</div>
                   <div style={{ fontSize: '14px', fontWeight: 800, color: '#1455B8' }}>
-                    {questions.filter((q) => q.section_type === 'APTITUDE').length} Aptitude /{' '}
-                    {questions.filter((q) => q.section_type === 'CODING').length} Coding ({questions.length} total)
+                    {selectedAssessment.sections && selectedAssessment.sections.length > 0 ? (
+                      <>
+                        {selectedAssessment.sections.map((sec, idx) => {
+                          const secCode = (sec.section_code || '').toUpperCase();
+                          const secName = (sec.section_name || '').toUpperCase();
+                          const count = questions.filter(
+                            (q) =>
+                              (q.section_type && q.section_type.toUpperCase() === secCode) ||
+                              (q.section_name && q.section_name.toUpperCase() === secName)
+                          ).length;
+                          return (
+                            <span key={sec.section_id || idx}>
+                              {count} {sec.section_name || sec.section_code || 'Sec'}
+                              {idx < (selectedAssessment.sections?.length || 0) - 1 ? ' / ' : ''}
+                            </span>
+                          );
+                        })}{' '}
+                        ({questions.length} total)
+                      </>
+                    ) : (
+                      <>
+                        {questions.filter((q) => q.section_type === 'APTITUDE').length} Aptitude /{' '}
+                        {questions.filter((q) => q.section_type === 'CODING').length} Coding ({questions.length} total)
+                      </>
+                    )}
                   </div>
                 </div>
 
@@ -1082,6 +1265,21 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                 >
                   {selectedAssessment.pool_sufficient
                     ? '✓ Pool is Sufficient'
+                    : selectedAssessment.sections && selectedAssessment.sections.length > 0
+                    ? `⚠ Shortage (${selectedAssessment.sections
+                        .map((sec) => {
+                          const secCode = (sec.section_code || '').toUpperCase();
+                          const secName = (sec.section_name || '').toUpperCase();
+                          const count = questions.filter(
+                            (q) =>
+                              (q.section_type && q.section_type.toUpperCase() === secCode) ||
+                              (q.section_name && q.section_name.toUpperCase() === secName)
+                          ).length;
+                          const shortage = Math.max(0, sec.question_count - count);
+                          return shortage > 0 ? `${shortage} ${sec.section_code || sec.section_name || 'Sec'}` : null;
+                        })
+                        .filter(Boolean)
+                        .join(', ') || 'Check Pool'})`
                     : `⚠ Shortage (${Math.max(0, selectedAssessment.aptitude_count - questions.filter((q) => q.section_type === 'APTITUDE').length)} Apt, ${Math.max(0, selectedAssessment.coding_count - questions.filter((q) => q.section_type === 'CODING').length)} Cod)`}
                 </div>
               </div>
@@ -1406,6 +1604,31 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
             </button>
 
             <button
+              onClick={handleBulkDelete}
+              disabled={bulkUpdating}
+              style={{
+                padding: '7px 14px',
+                backgroundColor: '#FEF2F2',
+                color: '#DC2626',
+                border: '1px solid #FCA5A5',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: 700,
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+              }}
+              title="Delete or safely archive selected questions"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              <span>Delete ({selectedIds.length})</span>
+            </button>
+
+            <button
               onClick={() => setSelectedIds([])}
               style={{
                 padding: '7px 12px',
@@ -1450,12 +1673,12 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                 />
               </th>
               <th style={{ padding: '12px 14px', width: '60px' }}>ID ↕</th>
-              <th style={{ padding: '12px 14px', width: '110px' }}>Section ↕</th>
+              <th style={{ padding: '12px 14px', minWidth: '130px', width: '130px' }}>Section ↕</th>
               <th style={{ padding: '12px 14px' }}>Question Prompt</th>
               <th style={{ padding: '12px 14px', width: '70px', textAlign: 'center' }}>Correct ↕</th>
               <th style={{ padding: '12px 14px', width: '90px', textAlign: 'center' }}>Difficulty ↕</th>
               <th style={{ padding: '12px 14px', width: '80px', textAlign: 'center' }}>Active ↕</th>
-              <th style={{ padding: '12px 14px', width: '90px', textAlign: 'right' }}>Actions</th>
+              <th style={{ padding: '12px 14px', width: '150px', textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -1502,19 +1725,25 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                       #{q.id}
                     </td>
                     <td style={{ padding: '12px 14px' }}>
-                      <span
-                        style={{
-                          padding: '3px 10px',
-                          borderRadius: '9999px',
-                          fontSize: '11px',
-                          fontWeight: 700,
-                          backgroundColor: q.section_type === 'CODING' ? '#ECFDF5' : '#EFF6FF',
-                          color: q.section_type === 'CODING' ? '#059669' : '#1455B8',
-                          border: `1px solid ${q.section_type === 'CODING' ? '#A7F3D0' : '#BFDBFE'}`,
-                        }}
-                      >
-                        {q.section_type === 'CODING' ? 'Coding' : 'Aptitude'}
-                      </span>
+                      {(() => {
+                        const sectionDisplay = getQuestionSectionDisplay(q, sections);
+                        const badgeStyle = getSectionBadgeStyle(sectionDisplay, q.section_type);
+                        return (
+                          <span
+                            style={{
+                              display: 'inline-block',
+                              padding: '3px 10px',
+                              borderRadius: '9999px',
+                              fontSize: '11px',
+                              fontWeight: 700,
+                              whiteSpace: 'nowrap',
+                              ...badgeStyle,
+                            }}
+                          >
+                            {sectionDisplay}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td style={{ padding: '12px 14px', color: '#0F172A' }}>
                       <div style={{ fontWeight: 600, marginBottom: '2px', lineHeight: 1.45 }}>
@@ -1606,14 +1835,14 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                         {q.is_active ? 'Active' : 'Inactive'}
                       </button>
                     </td>
-                    <td style={{ padding: '12px 14px', textAlign: 'right' }}>
+                    <td style={{ padding: '12px 14px', textAlign: 'right', whiteSpace: 'nowrap' }}>
                       <button
                         onClick={() => openEditModal(q)}
                         style={{
                           display: 'inline-flex',
                           alignItems: 'center',
                           gap: '4px',
-                          padding: '5px 12px',
+                          padding: '5px 10px',
                           backgroundColor: '#FFFFFF',
                           border: '1.5px solid #CBD5E1',
                           borderRadius: '8px',
@@ -1631,9 +1860,40 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                           e.currentTarget.style.backgroundColor = '#FFFFFF';
                           e.currentTarget.style.borderColor = '#CBD5E1';
                         }}
+                        title="Edit question details"
                       >
                         <span>✏️</span>
                         <span>Edit</span>
+                      </button>
+                      <button
+                        onClick={() => handleDeleteQuestion(q)}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          padding: '5px 10px',
+                          backgroundColor: '#FFFFFF',
+                          border: '1.5px solid #FECACA',
+                          borderRadius: '8px',
+                          color: '#DC2626',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                          marginLeft: '6px',
+                          transition: 'all 0.15s ease',
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.backgroundColor = '#FEF2F2';
+                          e.currentTarget.style.borderColor = '#F87171';
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.backgroundColor = '#FFFFFF';
+                          e.currentTarget.style.borderColor = '#FECACA';
+                        }}
+                        title="Delete or safely archive question"
+                      >
+                        <span>🗑️</span>
+                        <span>Delete</span>
                       </button>
                     </td>
                   </tr>

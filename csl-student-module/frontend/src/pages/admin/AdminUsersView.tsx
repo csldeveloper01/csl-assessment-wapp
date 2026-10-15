@@ -1,5 +1,11 @@
 import React, { useState, useEffect } from 'react';
-import { getAdminUsers, createAdminUser, type AdminStaffUser } from '../../api/admin';
+import {
+  getAdminUsers,
+  createAdminUser,
+  toggleAdminUserStatus,
+  deleteAdminUser,
+  type AdminStaffUser,
+} from '../../api/admin';
 
 export function AdminUsersView() {
   const [users, setUsers] = useState<AdminStaffUser[]>([]);
@@ -30,6 +36,39 @@ export function AdminUsersView() {
   useEffect(() => {
     fetchUsers();
   }, []);
+
+  const handleToggleStatus = async (user: AdminStaffUser) => {
+    const action = user.is_active ? 'deactivate' : 'activate';
+    const confirmed = window.confirm(
+      `Are you sure you want to ${action} user "${user.name || user.username}" (${user.email})?`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await toggleAdminUserStatus(user.id);
+      alert(res.message);
+      fetchUsers();
+    } catch (err: any) {
+      const msg = err.response?.data?.error || err.message || 'Failed to toggle user status.';
+      alert(`Action Blocked: ${msg}`);
+    }
+  };
+
+  const handleDeleteUser = async (user: AdminStaffUser) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete administrator account "${user.name || user.username}" (${user.email})?\n\nThis action cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const res = await deleteAdminUser(user.id);
+      alert(res.message);
+      fetchUsers();
+    } catch (err: any) {
+      const msg = err.response?.data?.error || err.message || 'Failed to delete user account.';
+      alert(`Deletion Denied: ${msg}`);
+    }
+  };
 
   const handleCreateSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -130,7 +169,8 @@ export function AdminUsersView() {
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>ROLE</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>SUPERUSER</th>
                 <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>STATUS</th>
-                <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'right' }}>DATE CREATED</th>
+                <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>DATE CREATED</th>
+                <th style={{ padding: '12px 16px', fontWeight: 700, color: '#475569', textAlign: 'right' }}>ACTIONS</th>
               </tr>
             </thead>
             <tbody>
@@ -158,8 +198,44 @@ export function AdminUsersView() {
                       {u.is_active ? 'Active' : 'Inactive'}
                     </span>
                   </td>
-                  <td style={{ padding: '14px 16px', textAlign: 'right', color: '#64748B', fontSize: '13px' }}>
+                  <td style={{ padding: '14px 16px', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
                     {u.date_joined ? new Date(u.date_joined).toLocaleDateString() : '—'}
+                  </td>
+                  <td style={{ padding: '14px 16px', textAlign: 'right' }}>
+                    <div style={{ display: 'inline-flex', gap: '8px', justifyContent: 'flex-end' }}>
+                      <button
+                        onClick={() => handleToggleStatus(u)}
+                        style={{
+                          padding: '4px 10px',
+                          backgroundColor: u.is_active ? '#FEF3C7' : '#DCFCE7',
+                          color: u.is_active ? '#92400E' : '#15803D',
+                          border: `1px solid ${u.is_active ? '#FDE68A' : '#BBF7D0'}`,
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 700,
+                          cursor: 'pointer',
+                        }}
+                        title={u.is_active ? 'Deactivate user' : 'Activate user'}
+                      >
+                        {u.is_active ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button
+                        onClick={() => handleDeleteUser(u)}
+                        style={{
+                          padding: '4px 10px',
+                          backgroundColor: '#FFF1F2',
+                          color: '#BE123C',
+                          border: '1px solid #FDA4AF',
+                          borderRadius: '6px',
+                          fontSize: '12px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                        title="Permanently delete user"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}

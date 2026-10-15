@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import {
   getAdminIntegrityEvents,
   reviewAdminIntegrityEvent,
+  deleteAdminIntegrityEvent,
+  bulkDeleteAdminIntegrityEvents,
   type AdminIntegrityEvent,
 } from '../../api/admin';
 
@@ -15,6 +17,10 @@ export function AdminIntegrityEventsView({ onReviewAttempt }: AdminIntegrityEven
   const [eventTypeFilter, setEventTypeFilter] = useState('');
   const [reviewFilter, setReviewFilter] = useState<'ALL' | 'UNREVIEWED' | 'REVIEWED'>('ALL');
   const [search, setSearch] = useState('');
+
+  // Bulk and Selection state
+  const [selectedEventIds, setSelectedEventIds] = useState<number[]>([]);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
 
   // Review Modal state
   const [selectedEvent, setSelectedEvent] = useState<AdminIntegrityEvent | null>(null);
@@ -78,6 +84,55 @@ export function AdminIntegrityEventsView({ onReviewAttempt }: AdminIntegrityEven
       alert('Failed to update integrity event review status.');
     } finally {
       setSavingReview(false);
+    }
+  };
+
+  const handleToggleSelectAllEvents = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedEventIds(events.map((ev) => ev.id));
+    } else {
+      setSelectedEventIds([]);
+    }
+  };
+
+  const handleToggleSelectEvent = (id: number) => {
+    setSelectedEventIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteEvent = async (ev: AdminIntegrityEvent) => {
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete this integrity audit log (${ev.event_type} for ${ev.candidate_name})?`
+    );
+    if (!confirmed) return;
+
+    try {
+      await deleteAdminIntegrityEvent(ev.id);
+      setEvents((prev) => prev.filter((item) => item.id !== ev.id));
+      setSelectedEventIds((prev) => prev.filter((id) => id !== ev.id));
+    } catch {
+      alert('Failed to delete integrity event record.');
+    }
+  };
+
+  const handleBulkDeleteEvents = async () => {
+    if (selectedEventIds.length === 0) return;
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete ${selectedEventIds.length} selected integrity log record(s)?`
+    );
+    if (!confirmed) return;
+
+    try {
+      setBulkDeleting(true);
+      const res = await bulkDeleteAdminIntegrityEvents(selectedEventIds);
+      alert(res.message);
+      setSelectedEventIds([]);
+      loadEvents();
+    } catch {
+      alert('Failed to delete selected integrity audit events.');
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -293,6 +348,87 @@ export function AdminIntegrityEventsView({ onReviewAttempt }: AdminIntegrityEven
         )}
       </div>
 
+      {/* Bulk Action Bar */}
+      {selectedEventIds.length > 0 && (
+        <div
+          style={{
+            marginBottom: '16px',
+            padding: '12px 18px',
+            backgroundColor: '#EFF6FF',
+            border: '1px solid #BFDBFE',
+            borderRadius: '10px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                width: '24px',
+                height: '24px',
+                borderRadius: '50%',
+                backgroundColor: '#1D4ED8',
+                color: '#FFFFFF',
+                fontSize: '12px',
+                fontWeight: 700,
+              }}
+            >
+              {selectedEventIds.length}
+            </span>
+            <span style={{ fontSize: '13px', fontWeight: 600, color: '#1E40AF' }}>
+              {selectedEventIds.length} event log{selectedEventIds.length === 1 ? '' : 's'} selected
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              type="button"
+              onClick={() => setSelectedEventIds([])}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: '#FFFFFF',
+                color: '#475569',
+                border: '1px solid #CBD5E1',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: 600,
+                cursor: 'pointer',
+              }}
+            >
+              Deselect All
+            </button>
+            <button
+              type="button"
+              onClick={handleBulkDeleteEvents}
+              disabled={bulkDeleting}
+              style={{
+                padding: '6px 14px',
+                backgroundColor: '#DC2626',
+                color: '#FFFFFF',
+                border: 'none',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: 700,
+                cursor: bulkDeleting ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              <span>{bulkDeleting ? 'Deleting...' : `Delete Selected (${selectedEventIds.length})`}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Events Table */}
       <div
         style={{
@@ -303,27 +439,39 @@ export function AdminIntegrityEventsView({ onReviewAttempt }: AdminIntegrityEven
           boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
         }}
       >
-        <table style={{ width: '100%', minWidth: '960px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+        <table style={{ width: '100%', minWidth: '1020px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
           <thead>
             <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#475569' }}>
+              <th style={{ padding: '12px 16px', width: '40px', textAlign: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={events.length > 0 && selectedEventIds.length === events.length}
+                  ref={(el) => {
+                    if (el) el.indeterminate = selectedEventIds.length > 0 && selectedEventIds.length < events.length;
+                  }}
+                  onChange={handleToggleSelectAllEvents}
+                  style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: '#1455B8' }}
+                  title="Select / Deselect All Events"
+                />
+              </th>
               <th style={{ padding: '12px 16px', width: '180px', fontWeight: 700 }}>Event Type</th>
               <th style={{ padding: '12px 16px', width: '220px', fontWeight: 700 }}>Candidate Details</th>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Telemetry & Context</th>
               <th style={{ padding: '12px 16px', width: '140px', fontWeight: 700 }}>Review Status</th>
               <th style={{ padding: '12px 16px', width: '160px', fontWeight: 700 }}>Timestamp</th>
-              <th style={{ padding: '12px 16px', width: '200px', fontWeight: 700, textAlign: 'right' }}>Actions</th>
+              <th style={{ padding: '12px 16px', width: '240px', fontWeight: 700, textAlign: 'right' }}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={6} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
+                <td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
                   Loading integrity audit trail...
                 </td>
               </tr>
             ) : events.length === 0 ? (
               <tr>
-                <td colSpan={6} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
+                <td colSpan={7} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
                   No integrity events recorded matching the current filter.
                 </td>
               </tr>
@@ -335,14 +483,31 @@ export function AdminIntegrityEventsView({ onReviewAttempt }: AdminIntegrityEven
                   ev.event_type.includes('EXCEEDED');
 
                 const isReviewed = Boolean(ev.is_reviewed);
+                const isSelected = selectedEventIds.includes(ev.id);
 
                 return (
                   <tr
                     key={ev.id}
-                    style={{ borderBottom: '1px solid #F1F5F9', transition: 'background-color 0.1s ease' }}
-                    onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
-                    onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
+                    style={{
+                      borderBottom: '1px solid #F1F5F9',
+                      backgroundColor: isSelected ? '#F0F7FF' : 'transparent',
+                      transition: 'background-color 0.1s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = '#F8FAFC';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
+                    }}
                   >
+                    <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectEvent(ev.id)}
+                        style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: '#1455B8' }}
+                      />
+                    </td>
                     <td style={{ padding: '12px 16px' }}>
                       <span
                         style={{
@@ -486,6 +651,22 @@ export function AdminIntegrityEventsView({ onReviewAttempt }: AdminIntegrityEven
                           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <polyline points="9 18 15 12 9 6"></polyline>
                           </svg>
+                        </button>
+                        <button
+                          onClick={() => handleDeleteEvent(ev)}
+                          style={{
+                            padding: '5px 10px',
+                            backgroundColor: '#FFF1F2',
+                            border: '1px solid #FDA4AF',
+                            borderRadius: '6px',
+                            color: '#BE123C',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                          title="Delete integrity event record"
+                        >
+                          Delete
                         </button>
                       </div>
                     </td>

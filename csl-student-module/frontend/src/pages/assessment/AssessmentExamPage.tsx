@@ -4,11 +4,19 @@ import cslTypographyLogo from '../../assets/CSL-TYPOGRAPHY.png';
 import {
   getAttemptState,
   saveAnswer,
+  sendAttemptHeartbeat,
+  syncAnswers,
   recordIntegrityEvent,
   finalizeAssessment,
   type AttemptDetailResponse,
   type QuestionSnapshot,
 } from '../../api/assessment';
+
+interface PendingAnswerRecord {
+  questionOrder: number;
+  selectedOption: string;
+  timestamp: number;
+}
 
 export function AssessmentExamPage() {
   const { attemptId } = useParams<{ attemptId: string }>();
@@ -25,6 +33,10 @@ export function AssessmentExamPage() {
 
   // Active section tab for navigation filtering (dynamic section code)
   const [activeSectionTab, setActiveSectionTab] = useState<string>('APTITUDE');
+
+  // Network & Disconnection Grace State
+  const [isPaused, setIsPaused] = useState<boolean>(false);
+  const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
 
   // Derive dynamic sections from attempt questions
   const sectionsList = useMemo(() => {
@@ -58,6 +70,80 @@ export function AssessmentExamPage() {
 
   const isPageHiddenRef = useRef<boolean>(false);
 
+  // Local Storage Answer Queue Helper
+  const getPendingQueue = useCallback((): Record<number, PendingAnswerRecord> => {
+    if (!attemptId) return {};
+    try {
+      const raw = localStorage.getItem(`csl_pending_answers_${attemptId}`);
+      return raw ? JSON.parse(raw) : {};
+    } catch {
+      return {};
+    }
+  }, [attemptId]);
+
+  const saveToPendingQueue = useCallback((qOrder: number, optionKey: string) => {
+    if (!attemptId) return;
+    try {
+      const key = `csl_pending_answers_${attemptId}`;
+      const map = getPendingQueue();
+      map[qOrder] = { questionOrder: qOrder, selectedOption: optionKey, timestamp: Date.now() };
+      localStorage.setItem(key, JSON.stringify(map));
+    } catch (e) {
+      console.warn('Failed to record pending answer in local storage:', e);
+    }
+  }, [attemptId, getPendingQueue]);
+
+  const removeFromPendingQueue = useCallback((qOrder: number) => {
+    if (!attemptId) return;
+    try {
+      const key = `csl_pending_answers_${attemptId}`;
+      const map = getPendingQueue();
+      if (map[qOrder]) {
+        delete map[qOrder];
+        localStorage.setItem(key, JSON.stringify(map));
+      }
+    } catch (e) {
+      console.warn('Failed to remove pending answer from local storage:', e);
+    }
+  }, [attemptId, getPendingQueue]);
+
+  // Flush pending answers with bulk sync API
+  const flushPendingQueue = useCallback(async () => {
+    if (!attemptId) return;
+    const map = getPendingQueue();
+    const items = Object.values(map);
+    if (items.length === 0) return;
+
+    try {
+      const payload = items.map((it) => ({
+        question_order: it.questionOrder,
+        selected_option: it.selectedOption,
+      }));
+      const res = await syncAnswers(attemptId, payload);
+      // Clean up successfully synced answers from local storage
+      localStorage.removeItem(`csl_pending_answers_${attemptId}`);
+
+      setSaveStatus((prev) => {
+        const next = { ...prev };
+        items.forEach((it) => {
+          next[it.questionOrder] = 'saved';
+        });
+        return next;
+      });
+
+      if (typeof res.is_paused === 'boolean') {
+        setIsPaused(res.is_paused);
+      }
+      if (typeof res.remaining_seconds === 'number' && !res.is_paused) {
+        setRemainingSeconds(res.remaining_seconds);
+        setTargetEndTimeMs(Date.now() + res.remaining_seconds * 1000);
+      }
+      setIsOffline(false);
+    } catch (err) {
+      console.warn('Pending answers flush failed, will retry automatically:', err);
+    }
+  }, [attemptId, getPendingQueue]);
+
   // 1. Fetch initial attempt state
   const loadAttempt = useCallback(async () => {
     if (!attemptId) return;
@@ -74,6 +160,9 @@ export function AssessmentExamPage() {
         return;
       }
       setAttempt(data);
+      if (data.is_paused !== undefined) {
+        setIsPaused(data.is_paused);
+      }
       if (data.questions && data.questions.length > 0) {
         const firstSec = data.questions[0].section_type || 'GENERAL';
         setActiveSectionTab(firstSec);
@@ -88,6 +177,14 @@ export function AssessmentExamPage() {
           initialSave[q.question_order] = 'saved';
         }
       });
+
+      // Hydrate any locally queued unsaved answers
+      const pendingMap = getPendingQueue();
+      Object.values(pendingMap).forEach((p) => {
+        initialAns[p.questionOrder] = p.selectedOption;
+        initialSave[p.questionOrder] = 'saving';
+      });
+
       setAnswers(initialAns);
       setSaveStatus(initialSave);
 
@@ -105,6 +202,11 @@ export function AssessmentExamPage() {
       const serverRemaining = Math.max(0, data.remaining_seconds ?? 0);
       setRemainingSeconds(serverRemaining);
       setTargetEndTimeMs(Date.now() + serverRemaining * 1000);
+
+      // Flush queued answers if any exist
+      if (Object.keys(pendingMap).length > 0) {
+        flushPendingQueue();
+      }
     } catch (err: unknown) {
       if (typeof err === 'object' && err !== null && 'response' in err) {
         const axErr = err as { response?: { status?: number; data?: { detail?: string } } };
@@ -119,7 +221,7 @@ export function AssessmentExamPage() {
     } finally {
       setLoading(false);
     }
-  }, [attemptId, navigate]);
+  }, [attemptId, navigate, getPendingQueue, flushPendingQueue]);
 
   useEffect(() => {
     loadAttempt();
@@ -135,18 +237,77 @@ export function AssessmentExamPage() {
     }
   }, [currentIndex, attempt, activeSectionTab]);
 
+  // Network online/offline event listeners
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOffline(false);
+      flushPendingQueue();
+    };
+    const handleOffline = () => {
+      setIsOffline(true);
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [flushPendingQueue]);
+
+  // Periodic heartbeat every 25 seconds for keep-alive, timer sync, and outage recovery
+  useEffect(() => {
+    if (!attemptId || submitting) return;
+
+    const interval = setInterval(async () => {
+      if (!navigator.onLine) {
+        setIsOffline(true);
+        return;
+      }
+
+      const pendingMap = getPendingQueue();
+      if (Object.keys(pendingMap).length > 0) {
+        await flushPendingQueue();
+        return;
+      }
+
+      try {
+        const hb = await sendAttemptHeartbeat(attemptId);
+        setIsOffline(false);
+        setIsPaused(hb.is_paused);
+        if (!hb.is_paused && typeof hb.remaining_seconds === 'number') {
+          setRemainingSeconds(hb.remaining_seconds);
+          setTargetEndTimeMs(Date.now() + hb.remaining_seconds * 1000);
+        }
+        if (
+          hb.state === 'SUBMITTED' ||
+          hb.state === 'TIMED_OUT' ||
+          hb.state === 'FLAGGED_FOR_REVIEW'
+        ) {
+          navigate(`/assessment/results/${hb.attempt_id}`, { replace: true });
+        }
+      } catch {
+        setIsOffline(true);
+      }
+    }, 25000);
+
+    return () => clearInterval(interval);
+  }, [attemptId, submitting, getPendingQueue, flushPendingQueue, navigate]);
+
   // Final Submission Handlers
   const handleConfirmSubmit = useCallback(async () => {
     if (!attemptId || submitting) return;
     setSubmitting(true);
     try {
+      // Guaranteed sync of all local pending answers before finalization
+      await flushPendingQueue();
       const res = await finalizeAssessment(attemptId);
+      localStorage.removeItem(`csl_pending_answers_${attemptId}`);
       navigate(`/assessment/results/${res.id}`, { replace: true });
     } catch {
       alert('Error submitting assessment. Retrying finalize...');
       setSubmitting(false);
     }
-  }, [attemptId, submitting, navigate]);
+  }, [attemptId, submitting, navigate, flushPendingQueue]);
 
   const handleAutoSubmitOnTimeout = useCallback(async () => {
     if (!attemptId || submitting) return;
@@ -155,18 +316,23 @@ export function AssessmentExamPage() {
       'Assessment duration elapsed. Your test is being automatically submitted...'
     );
     try {
+      await flushPendingQueue();
       const res = await finalizeAssessment(attemptId);
+      localStorage.removeItem(`csl_pending_answers_${attemptId}`);
       navigate(`/assessment/results/${res.id}`, { replace: true });
     } catch {
       navigate(`/assessment/results/${attemptId}`, { replace: true });
     }
-  }, [attemptId, submitting, navigate]);
+  }, [attemptId, submitting, navigate, flushPendingQueue]);
 
   // 2. Countdown Timer derived from authoritative server deadline
   useEffect(() => {
     if (!targetEndTimeMs || submitting) return;
 
     const tick = () => {
+      // Freeze timer countdown if disconnected grace policy is paused
+      if (isPaused) return;
+
       const remaining = Math.max(0, Math.ceil((targetEndTimeMs - Date.now()) / 1000));
       setRemainingSeconds(remaining);
 
@@ -180,7 +346,7 @@ export function AssessmentExamPage() {
     const timer = setInterval(tick, 1000);
 
     return () => clearInterval(timer);
-  }, [targetEndTimeMs, submitting, handleAutoSubmitOnTimeout]);
+  }, [targetEndTimeMs, submitting, isPaused, handleAutoSubmitOnTimeout]);
 
   // 3. Tab switch enforcement (two switches permitted with warning, third auto-submits)
   useEffect(() => {
@@ -331,12 +497,16 @@ export function AssessmentExamPage() {
 
     setAnswers((prev) => ({ ...prev, [questionOrder]: optionKey }));
     setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'saving' }));
+    saveToPendingQueue(questionOrder, optionKey);
 
     try {
       await saveAnswer(attemptId, questionOrder, optionKey);
+      removeFromPendingQueue(questionOrder);
       setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'saved' }));
+      setIsOffline(false);
     } catch {
       setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'failed' }));
+      setIsOffline(!navigator.onLine);
     }
   };
 
@@ -350,12 +520,16 @@ export function AssessmentExamPage() {
       return copy;
     });
     setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'saving' }));
+    saveToPendingQueue(questionOrder, '');
 
     try {
       await saveAnswer(attemptId, questionOrder, '');
+      removeFromPendingQueue(questionOrder);
       setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'saved' }));
+      setIsOffline(false);
     } catch {
       setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'failed' }));
+      setIsOffline(!navigator.onLine);
     }
   };
 
@@ -376,14 +550,18 @@ export function AssessmentExamPage() {
 
   // Retry save
   const handleRetrySave = async (questionOrder: number) => {
-    const selected = answers[questionOrder];
-    if (selected === undefined || !attemptId || submitting) return;
+    const selected = answers[questionOrder] ?? '';
+    if (!attemptId || submitting) return;
     setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'saving' }));
+    saveToPendingQueue(questionOrder, selected);
     try {
       await saveAnswer(attemptId, questionOrder, selected);
+      removeFromPendingQueue(questionOrder);
       setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'saved' }));
+      setIsOffline(false);
     } catch {
       setSaveStatus((prev) => ({ ...prev, [questionOrder]: 'failed' }));
+      setIsOffline(!navigator.onLine);
     }
   };
 
@@ -707,11 +885,11 @@ export function AssessmentExamPage() {
                   fontSize: '20px',
                   fontWeight: 800,
                   fontFamily: 'monospace',
-                  color: isCritical ? '#DC2626' : isUrgent ? '#D97706' : '#0B2E6F',
+                  color: isPaused ? '#D97706' : isCritical ? '#DC2626' : isUrgent ? '#D97706' : '#0B2E6F',
                   lineHeight: 1.2,
                 }}
               >
-                {timerDisplay}
+                {isPaused ? 'PAUSED' : timerDisplay}
               </div>
             </div>
           </div>
@@ -735,6 +913,52 @@ export function AssessmentExamPage() {
           </button>
         </div>
       </header>
+
+      {/* Network Disconnection Grace & Offline Banners */}
+      {isPaused && (
+        <div
+          style={{
+            backgroundColor: '#FEF3C7',
+            borderBottom: '1px solid #F59E0B',
+            color: '#92400E',
+            padding: '8px 24px',
+            fontSize: '13px',
+            fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            zIndex: 15,
+          }}
+        >
+          <span>⏸️</span>
+          <span>
+            <strong>Assessment Paused:</strong> Network outage grace policy active. Your remaining time has been frozen. It will resume once the network reconnects.
+          </span>
+        </div>
+      )}
+      {isOffline && !isPaused && (
+        <div
+          style={{
+            backgroundColor: '#FEE2E2',
+            borderBottom: '1px solid #EF4444',
+            color: '#B91C1C',
+            padding: '8px 24px',
+            fontSize: '13px',
+            fontWeight: 600,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            gap: '8px',
+            zIndex: 15,
+          }}
+        >
+          <span>⚠️</span>
+          <span>
+            <strong>Network Disconnected:</strong> You are currently offline. Answers are safely preserved locally on your device and will synchronize automatically.
+          </span>
+        </div>
+      )}
 
       {/* Warnings & Integrity Notices */}
       {tabWarning && (

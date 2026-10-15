@@ -3,6 +3,7 @@ import {
   getAdminAttemptReview,
   updateAdminAttemptReviewStatus,
   reviewAdminIntegrityEvent,
+  deleteAdminAttempt,
   type AdminAttemptReview,
   type AdminIntegrityEvent,
 } from '../../api/admin';
@@ -15,6 +16,7 @@ interface AdminAttemptReviewViewProps {
 export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReviewViewProps) {
   const [review, setReview] = useState<AdminAttemptReview | null>(null);
   const [loading, setLoading] = useState(true);
+  const [deletingAttempt, setDeletingAttempt] = useState(false);
   const [sectionFilter, setSectionFilter] = useState<'ALL' | 'APTITUDE' | 'CODING'>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'CORRECT' | 'INCORRECT' | 'UNANSWERED'>('ALL');
 
@@ -85,6 +87,24 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
       alert('Failed to update integrity event review.');
     } finally {
       setSavingEventReview(false);
+    }
+  };
+
+  const handleDeleteAttempt = async () => {
+    if (!review) return;
+    const confirmed = window.confirm(
+      `Are you sure you want to permanently delete this assessment attempt for candidate ${review.candidate.full_name} (${review.candidate.register_number})?\n\nThis action cannot be undone and will permanently remove all answer snapshots, scoring records, and proctoring logs for this session.`
+    );
+    if (!confirmed) return;
+
+    try {
+      setDeletingAttempt(true);
+      await deleteAdminAttempt(attemptId);
+      alert('Assessment attempt deleted successfully.');
+      onBack();
+    } catch {
+      alert('Failed to delete assessment attempt.');
+      setDeletingAttempt(false);
     }
   };
 
@@ -240,6 +260,31 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
               ⚠️ Flag for Proctoring Review
             </button>
           )}
+
+          <button
+            onClick={handleDeleteAttempt}
+            disabled={deletingAttempt}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '8px 16px',
+              backgroundColor: '#FFF1F2',
+              color: '#BE123C',
+              border: '1.5px solid #FDA4AF',
+              borderRadius: '8px',
+              fontSize: '13px',
+              fontWeight: 700,
+              cursor: deletingAttempt ? 'not-allowed' : 'pointer',
+              boxShadow: '0 1px 3px rgba(190, 18, 60, 0.1)',
+            }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+            <span>{deletingAttempt ? 'Deleting...' : 'Delete Attempt'}</span>
+          </button>
         </div>
       </div>
 

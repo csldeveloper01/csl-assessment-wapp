@@ -146,6 +146,20 @@ export interface AttemptDetailResponse {
   remaining_tab_switches: number;
   is_flagged?: boolean;
   flag_reason?: string;
+  is_paused?: boolean;
+  total_paused_seconds?: number;
+  max_disconnection_grace_seconds?: number;
+  sections?: Array<{
+    id: number;
+    code: string;
+    name: string;
+    question_count: number;
+    marks_per_question: number;
+    total_marks: number;
+    order: number;
+    snapshot_count?: number;
+    unattempted_count?: number;
+  }>;
   questions: QuestionSnapshot[];
   assessment_token?: string;
 }
@@ -251,6 +265,45 @@ export const saveAnswer = async (
   const res = await assessmentApi.post(`/attempts/${attemptId}/answer/`, {
     question_order: questionOrder,
     selected_option: selectedOption,
+  });
+  return res.data;
+};
+
+export interface HeartbeatResponse {
+  attempt_id: string;
+  state: string;
+  remaining_seconds: number;
+  is_paused: boolean;
+  total_paused_seconds: number;
+  server_time: string;
+}
+
+export const sendAttemptHeartbeat = async (attemptId: string): Promise<HeartbeatResponse> => {
+  const res = await assessmentApi.post<HeartbeatResponse>(`/attempts/${attemptId}/heartbeat/`);
+  return res.data;
+};
+
+export interface SyncAnswerItem {
+  question_order: number;
+  selected_option: string;
+  client_timestamp?: string;
+}
+
+export interface SyncAnswersResponse {
+  attempt_id: string;
+  synced_count: number;
+  state: string;
+  remaining_seconds: number;
+  is_paused: boolean;
+  total_paused_seconds: number;
+}
+
+export const syncAnswers = async (
+  attemptId: string,
+  answers: SyncAnswerItem[]
+): Promise<SyncAnswersResponse> => {
+  const res = await assessmentApi.post<SyncAnswersResponse>(`/attempts/${attemptId}/sync-answers/`, {
+    answers,
   });
   return res.data;
 };

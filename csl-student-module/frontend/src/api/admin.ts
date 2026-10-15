@@ -369,6 +369,17 @@ export async function deleteAdminCollege(id: number): Promise<{ message: string 
   return res.data;
 }
 
+export async function bulkDeleteAdminColleges(ids: number[]): Promise<{
+  message: string;
+  deleted_count: number;
+  blocked_count: number;
+  deleted_ids: number[];
+  blocked_colleges: { id: number; name: string; attempts_count: number }[];
+}> {
+  const res = await adminApi.post('/colleges/bulk-delete/', { ids });
+  return res.data;
+}
+
 export async function importAdminCollegeCandidates(
   collegeId: number,
   file?: File,
@@ -410,6 +421,17 @@ export async function updateAdminAssessment(id: string, data: Partial<AdminAsses
 
 export async function deleteAdminAssessment(id: string): Promise<{ message: string }> {
   const res = await adminApi.delete(`/assessments/${id}/`);
+  return res.data;
+}
+
+export async function bulkDeleteAdminAssessments(ids: string[]): Promise<{
+  message: string;
+  deleted_count: number;
+  archived_count: number;
+  deleted_ids: string[];
+  archived_ids: string[];
+}> {
+  const res = await adminApi.post('/assessments/bulk-delete/', { ids });
   return res.data;
 }
 
@@ -508,6 +530,25 @@ export async function toggleAdminCandidateStatus(id: string): Promise<{ id: stri
   return res.data;
 }
 
+export async function deleteAdminCandidate(id: string): Promise<{
+  message: string;
+  action: 'DELETED' | 'ANONYMIZED';
+  id: string;
+}> {
+  const res = await adminApi.delete(`/candidates/${id}/`);
+  return res.data;
+}
+
+export async function bulkDeleteAdminCandidates(ids: string[]): Promise<{
+  message: string;
+  deleted_count: number;
+  anonymized_count: number;
+  total_processed: number;
+}> {
+  const res = await adminApi.post('/candidates/bulk-delete/', { ids });
+  return res.data;
+}
+
 export async function exportAdminCandidatesCSV(params?: {
   college_id?: string | number;
   search?: string;
@@ -562,6 +603,22 @@ export async function bulkUpdateAdminQuestions(
   }
 ): Promise<{ updated_count: number; message: string }> {
   const res = await adminApi.post('/questions/bulk-update/', { ids, ...updates });
+  return res.data;
+}
+
+export async function deleteAdminQuestion(
+  id: number,
+  params?: { assessment_id?: string }
+): Promise<{ deleted: boolean; archived?: boolean; message: string }> {
+  const res = await adminApi.delete(`/questions/${id}/`, { params });
+  return res.data;
+}
+
+export async function bulkDeleteAdminQuestions(
+  ids: number[],
+  assessment_id?: string
+): Promise<{ deleted_count: number; archived_count: number; message: string }> {
+  const res = await adminApi.post('/questions/bulk-delete/', { ids, assessment_id });
   return res.data;
 }
 
@@ -626,6 +683,17 @@ export async function deleteAdminSection(id: number): Promise<{ message?: string
   return res.data;
 }
 
+export async function bulkDeleteAdminSections(ids: number[]): Promise<{
+  message: string;
+  deleted_count: number;
+  blocked_count: number;
+  deleted_ids: number[];
+  blocked_sections: { id: number; name: string; questions_count: number; assessments_count: number }[];
+}> {
+  const res = await adminApi.post('/sections/bulk-delete/', { ids });
+  return res.data;
+}
+
 // ─── LIVE SESSIONS & RESULTS ────────────────────────────────────────────────
 export async function getAdminLiveAttempts(params?: {
   state?: string;
@@ -648,6 +716,16 @@ export async function updateAdminAttemptReviewStatus(
   notes?: string
 ): Promise<{ message: string }> {
   const res = await adminApi.post(`/attempts/${attemptId}/review/`, { action, notes });
+  return res.data;
+}
+
+export async function deleteAdminAttempt(attemptId: string): Promise<{ message: string; id: string }> {
+  const res = await adminApi.delete(`/attempts/${attemptId}/review/`);
+  return res.data;
+}
+
+export async function bulkDeleteAdminAttempts(ids: string[]): Promise<{ message: string; deleted_count: number }> {
+  const res = await adminApi.post('/attempts/bulk-delete/', { ids });
   return res.data;
 }
 
@@ -684,6 +762,16 @@ export async function reviewAdminIntegrityEvent(
   return res.data;
 }
 
+export async function deleteAdminIntegrityEvent(id: number): Promise<{ message: string; id: number }> {
+  const res = await adminApi.delete(`/integrity-events/${id}/review/`);
+  return res.data;
+}
+
+export async function bulkDeleteAdminIntegrityEvents(ids: number[]): Promise<{ message: string; deleted_count: number }> {
+  const res = await adminApi.post('/integrity-events/bulk-delete/', { ids });
+  return res.data;
+}
+
 // ─── SUPERUSER & ADMIN MANAGEMENT ──────────────────────────────────────────
 export interface AdminStaffUser {
   id: number;
@@ -710,5 +798,15 @@ export async function createAdminUser(data: {
   is_superuser?: boolean;
 }): Promise<{ id: number; email: string; username: string; message: string }> {
   const res = await adminApi.post('/users/', data);
+  return res.data;
+}
+
+export async function toggleAdminUserStatus(userId: number): Promise<{ id: number; is_active: boolean; message: string }> {
+  const res = await adminApi.post(`/users/${userId}/`);
+  return res.data;
+}
+
+export async function deleteAdminUser(userId: number): Promise<{ message: string; id: number }> {
+  const res = await adminApi.delete(`/users/${userId}/`);
   return res.data;
 }

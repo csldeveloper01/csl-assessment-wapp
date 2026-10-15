@@ -4,6 +4,8 @@ import {
   getAdminCandidateDetail,
   getAdminColleges,
   toggleAdminCandidateStatus,
+  deleteAdminCandidate,
+  bulkDeleteAdminCandidates,
   exportAdminCandidatesCSV,
   type AdminCandidate,
   type AdminCollege,
@@ -21,6 +23,10 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
   const [loading, setLoading] = useState(true);
   const [selectedCandidate, setSelectedCandidate] = useState<any | null>(null);
   const [exportingCSV, setExportingCSV] = useState(false);
+
+  // Bulk Selection & Deletion State
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [deleting, setDeleting] = useState(false);
 
   const handleExportCSV = async () => {
     try {
@@ -126,6 +132,66 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
       alert('Failed to load candidate details.');
     }
   };
+
+  const handleToggleSelectAll = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedIds(candidates.map((c) => c.id));
+    } else {
+      setSelectedIds([]);
+    }
+  };
+
+  const handleToggleSelectRow = (id: string) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleDeleteCandidate = async (cand: AdminCandidate) => {
+    const hasAttempts = (cand.attempts_count || 0) > 0;
+    const confirmPrompt = hasAttempts
+      ? `Candidate "${cand.full_name}" (${cand.register_number}) has ${cand.attempts_count} recorded assessment attempt(s).\n\nTo preserve historical audit records and cohort performance metrics, deleting this candidate will permanently anonymize their personal identifying information (PII) and deactivate their account.\n\nAre you sure you wish to proceed?`
+      : `Are you sure you want to permanently delete candidate "${cand.full_name}" (${cand.register_number})?\n\nThis action cannot be undone.`;
+
+    if (!window.confirm(confirmPrompt)) return;
+
+    try {
+      setDeleting(true);
+      const res = await deleteAdminCandidate(cand.id);
+      alert(res.message);
+      setSelectedIds((prev) => prev.filter((id) => id !== cand.id));
+      if (selectedCandidate?.id === cand.id) {
+        setSelectedCandidate(null);
+      }
+      loadCandidates();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || err.message || 'Failed to delete candidate.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.length === 0) return;
+    const confirmPrompt = `Are you sure you want to delete ${selectedIds.length} selected candidate(s)?\n\n- Candidates with NO assessment attempts will be permanently erased.\n- Candidates WITH existing attempts will have their PII safely anonymized and accounts deactivated to preserve assessment analytics.\n\nDo you want to proceed?`;
+
+    if (!window.confirm(confirmPrompt)) return;
+
+    try {
+      setDeleting(true);
+      const res = await bulkDeleteAdminCandidates(selectedIds);
+      alert(res.message);
+      setSelectedIds([]);
+      loadCandidates();
+    } catch (err: any) {
+      alert(err.response?.data?.detail || err.message || 'Failed to perform bulk candidate deletion.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const isAllSelected = candidates.length > 0 && selectedIds.length === candidates.length;
+  const isPartiallySelected = selectedIds.length > 0 && selectedIds.length < candidates.length;
 
   return (
     <div>
@@ -277,6 +343,84 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
         </form>
       </div>
 
+      {/* Bulk Action Toolbar */}
+      {selectedIds.length > 0 && (
+        <div
+          style={{
+            backgroundColor: '#EFF6FF',
+            border: '1.5px solid #BFDBFE',
+            borderRadius: '12px',
+            padding: '12px 20px',
+            marginBottom: '16px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            boxShadow: '0 2px 8px rgba(20, 85, 184, 0.08)',
+            flexWrap: 'wrap',
+            gap: '12px',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span
+              style={{
+                backgroundColor: '#1455B8',
+                color: '#FFFFFF',
+                borderRadius: '6px',
+                padding: '3px 9px',
+                fontSize: '12px',
+                fontWeight: 800,
+              }}
+            >
+              {selectedIds.length} Selected
+            </span>
+            <span style={{ fontSize: '13px', color: '#1E3A8A', fontWeight: 600 }}>
+              Batch candidate actions: unreferenced candidates will be permanently removed; candidates with attempt history will be safely anonymized.
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <button
+              onClick={() => setSelectedIds([])}
+              style={{
+                padding: '6px 12px',
+                backgroundColor: '#FFFFFF',
+                border: '1px solid #CBD5E1',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: 600,
+                color: '#475569',
+                cursor: 'pointer',
+              }}
+            >
+              Deselect All
+            </button>
+            <button
+              onClick={handleBulkDelete}
+              disabled={deleting}
+              style={{
+                padding: '6px 14px',
+                backgroundColor: '#DC2626',
+                color: '#FFFFFF',
+                border: 'none',
+                borderRadius: '6px',
+                fontSize: '12px',
+                fontWeight: 700,
+                cursor: deleting ? 'not-allowed' : 'pointer',
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="3 6 5 6 21 6"></polyline>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+              </svg>
+              <span>{deleting ? 'Deleting...' : `Delete Selected (${selectedIds.length})`}</span>
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Table Container */}
       <div
         style={{
@@ -287,9 +431,21 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
           boxShadow: '0 1px 3px rgba(0, 0, 0, 0.02)',
         }}
       >
-        <table style={{ width: '100%', minWidth: '960px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
+        <table style={{ width: '100%', minWidth: '1000px', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
           <thead>
             <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0', color: '#475569' }}>
+              <th style={{ padding: '12px 16px', width: '40px', textAlign: 'center' }}>
+                <input
+                  type="checkbox"
+                  checked={isAllSelected}
+                  ref={(el) => {
+                    if (el) el.indeterminate = isPartiallySelected;
+                  }}
+                  onChange={handleToggleSelectAll}
+                  style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: '#1455B8' }}
+                  title="Select / Deselect All Candidates"
+                />
+              </th>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Candidate Name</th>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>Roll / Register No</th>
               <th style={{ padding: '12px 16px', fontWeight: 700 }}>College / Institution</th>
@@ -303,143 +459,178 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
           <tbody>
             {loading ? (
               <tr>
-                <td colSpan={8} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
+                <td colSpan={9} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
                   Loading candidates from database...
                 </td>
               </tr>
             ) : candidates.length === 0 ? (
               <tr>
-                <td colSpan={8} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
+                <td colSpan={9} style={{ padding: '48px', textAlign: 'center', color: '#64748B' }}>
                   No candidates found matching the query criteria.
                 </td>
               </tr>
             ) : (
-              candidates.map((cand) => (
-                <tr
-                  key={cand.id}
-                  style={{ borderBottom: '1px solid #F1F5F9', transition: 'background-color 0.1s ease' }}
-                  onMouseEnter={(e) => (e.currentTarget.style.backgroundColor = '#F8FAFC')}
-                  onMouseLeave={(e) => (e.currentTarget.style.backgroundColor = 'transparent')}
-                >
-                  <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0B2E6F' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-                      {cand.full_name}
-                      <span
-                        style={{
-                          fontSize: '10px',
-                          fontWeight: 700,
-                          padding: '1px 6px',
-                          borderRadius: '8px',
-                          backgroundColor: cand.is_active ? '#DCFCE7' : '#F1F5F9',
-                          color: cand.is_active ? '#15803D' : '#64748B',
-                        }}
-                      >
-                        {cand.is_active ? 'Active' : 'Inactive'}
-                      </span>
-                    </div>
-                    <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 500, marginTop: '2px' }}>
-                      {cand.email} {cand.phone_number && `• ${cand.phone_number}`}
-                    </div>
-                  </td>
-                  <td style={{ padding: '12px 16px', fontFamily: 'monospace', fontWeight: 700 }}>
-                    {cand.register_number}
-                  </td>
-                  <td style={{ padding: '12px 16px', color: '#334155' }}>
-                    {cand.college_code && (
-                      <span style={{ backgroundColor: '#EEF2FF', color: '#3730A3', fontWeight: 700, fontSize: '11px', padding: '2px 6px', borderRadius: '4px', marginRight: '6px' }}>
-                        {cand.college_code}
-                      </span>
-                    )}
-                    {cand.college}
-                  </td>
-                  <td style={{ padding: '12px 16px', color: '#475569' }}>
-                    {cand.department}
-                    <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>{cand.year_of_study}</div>
-                  </td>
-                  <td style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700 }}>
-                    <span
-                      style={{
-                        display: 'inline-block',
-                        padding: '2px 8px',
-                        borderRadius: '6px',
-                        backgroundColor: '#F1F5F9',
-                        color: '#334155',
-                      }}
-                    >
-                      {cand.attempts_count}
-                    </span>
-                  </td>
-                  <td style={{ padding: '12px 16px' }}>
-                    {cand.latest_state ? (
+              candidates.map((cand) => {
+                const isSelected = selectedIds.includes(cand.id);
+                return (
+                  <tr
+                    key={cand.id}
+                    style={{
+                      borderBottom: '1px solid #F1F5F9',
+                      backgroundColor: isSelected ? '#F0F7FF' : 'transparent',
+                      transition: 'background-color 0.1s ease',
+                    }}
+                    onMouseEnter={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = '#F8FAFC';
+                    }}
+                    onMouseLeave={(e) => {
+                      if (!isSelected) e.currentTarget.style.backgroundColor = 'transparent';
+                    }}
+                  >
+                    <td style={{ padding: '12px 16px', textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectRow(cand.id)}
+                        style={{ cursor: 'pointer', width: '16px', height: '16px', accentColor: '#1455B8' }}
+                      />
+                    </td>
+                    <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0B2E6F' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {cand.full_name}
+                        <span
+                          style={{
+                            fontSize: '10px',
+                            fontWeight: 700,
+                            padding: '1px 6px',
+                            borderRadius: '8px',
+                            backgroundColor: cand.is_active ? '#DCFCE7' : '#F1F5F9',
+                            color: cand.is_active ? '#15803D' : '#64748B',
+                          }}
+                        >
+                          {cand.is_active ? 'Active' : 'Inactive'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 500, marginTop: '2px' }}>
+                        {cand.email} {cand.phone_number && `• ${cand.phone_number}`}
+                      </div>
+                    </td>
+                    <td style={{ padding: '12px 16px', fontFamily: 'monospace', fontWeight: 700 }}>
+                      {cand.register_number}
+                    </td>
+                    <td style={{ padding: '12px 16px', color: '#334155' }}>
+                      {cand.college_code && (
+                        <span style={{ backgroundColor: '#EEF2FF', color: '#3730A3', fontWeight: 700, fontSize: '11px', padding: '2px 6px', borderRadius: '4px', marginRight: '6px' }}>
+                          {cand.college_code}
+                        </span>
+                      )}
+                      {cand.college}
+                    </td>
+                    <td style={{ padding: '12px 16px', color: '#475569' }}>
+                      {cand.department}
+                      <div style={{ fontSize: '11px', color: '#94A3B8', marginTop: '2px' }}>{cand.year_of_study}</div>
+                    </td>
+                    <td style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700 }}>
                       <span
                         style={{
                           display: 'inline-block',
-                          padding: '3px 8px',
-                          borderRadius: '9999px',
-                          fontSize: '11px',
-                          fontWeight: 700,
-                          backgroundColor:
-                            cand.latest_state === 'SUBMITTED'
-                              ? '#DCFCE7'
-                              : cand.latest_state === 'IN_PROGRESS'
-                              ? '#FEF3C7'
-                              : '#F1F5F9',
-                          color:
-                            cand.latest_state === 'SUBMITTED'
-                              ? '#166534'
-                              : cand.latest_state === 'IN_PROGRESS'
-                              ? '#B45309'
-                              : '#475569',
+                          padding: '2px 8px',
+                          borderRadius: '6px',
+                          backgroundColor: '#F1F5F9',
+                          color: '#334155',
                         }}
                       >
-                        {cand.latest_state}
+                        {cand.attempts_count}
                       </span>
-                    ) : (
-                      <span style={{ color: '#94A3B8', fontSize: '11px' }}>Registered</span>
-                    )}
-                  </td>
-                  <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0B2E6F' }}>
-                    {cand.latest_score !== null && cand.latest_score !== undefined
-                      ? `${cand.latest_score} / 50`
-                      : '—'}
-                  </td>
-                  <td style={{ padding: '12px 16px', textAlign: 'right' }}>
-                    <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end' }}>
-                      <button
-                        onClick={() => handleSelectCandidate(cand.id)}
-                        style={{
-                          padding: '6px 12px',
-                          backgroundColor: '#FFFFFF',
-                          border: '1px solid #1455B8',
-                          borderRadius: '6px',
-                          color: '#1455B8',
-                          fontSize: '12px',
-                          fontWeight: 700,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        View Details
-                      </button>
-                      <button
-                        onClick={() => handleToggleCandidate(cand.id)}
-                        title={cand.is_active ? 'Deactivate candidate' : 'Activate candidate'}
-                        style={{
-                          padding: '6px 10px',
-                          backgroundColor: cand.is_active ? '#FFF1F2' : '#F0FDF4',
-                          border: `1px solid ${cand.is_active ? '#FECDD3' : '#BBF7D0'}`,
-                          borderRadius: '6px',
-                          color: cand.is_active ? '#E11D48' : '#16A34A',
-                          fontSize: '12px',
-                          fontWeight: 600,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {cand.is_active ? 'Deactivate' : 'Activate'}
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))
+                    </td>
+                    <td style={{ padding: '12px 16px' }}>
+                      {cand.latest_state ? (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '3px 8px',
+                            borderRadius: '9999px',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            backgroundColor:
+                              cand.latest_state === 'SUBMITTED'
+                                ? '#DCFCE7'
+                                : cand.latest_state === 'IN_PROGRESS'
+                                ? '#FEF3C7'
+                                : '#F1F5F9',
+                            color:
+                              cand.latest_state === 'SUBMITTED'
+                                ? '#166534'
+                                : cand.latest_state === 'IN_PROGRESS'
+                                ? '#B45309'
+                                : '#475569',
+                          }}
+                        >
+                          {cand.latest_state}
+                        </span>
+                      ) : (
+                        <span style={{ color: '#94A3B8', fontSize: '11px' }}>Registered</span>
+                      )}
+                    </td>
+                    <td style={{ padding: '12px 16px', fontWeight: 700, color: '#0B2E6F' }}>
+                      {cand.latest_score !== null && cand.latest_score !== undefined
+                        ? `${cand.latest_score} / 50`
+                        : '—'}
+                    </td>
+                    <td style={{ padding: '12px 16px', textAlign: 'right' }}>
+                      <div style={{ display: 'flex', gap: '6px', justifyContent: 'flex-end', alignItems: 'center' }}>
+                        <button
+                          onClick={() => handleSelectCandidate(cand.id)}
+                          style={{
+                            padding: '6px 12px',
+                            backgroundColor: '#FFFFFF',
+                            border: '1px solid #1455B8',
+                            borderRadius: '6px',
+                            color: '#1455B8',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          View Details
+                        </button>
+                        <button
+                          onClick={() => handleToggleCandidate(cand.id)}
+                          title={cand.is_active ? 'Deactivate candidate' : 'Activate candidate'}
+                          style={{
+                            padding: '6px 10px',
+                            backgroundColor: cand.is_active ? '#FFF1F2' : '#F0FDF4',
+                            border: `1px solid ${cand.is_active ? '#FECDD3' : '#BBF7D0'}`,
+                            borderRadius: '6px',
+                            color: cand.is_active ? '#E11D48' : '#16A34A',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {cand.is_active ? 'Deactivate' : 'Activate'}
+                        </button>
+                        <button
+                          onClick={() => handleDeleteCandidate(cand)}
+                          title="Delete candidate record or anonymize PII"
+                          style={{
+                            padding: '6px 10px',
+                            backgroundColor: '#FFF1F2',
+                            color: '#BE123C',
+                            border: '1px solid #FDA4AF',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: 600,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          Delete
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>

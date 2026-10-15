@@ -639,16 +639,21 @@ class AdminQuestionSerializer(serializers.ModelSerializer):
             "assessment_title",
         ]
 
+    def _get_assessments(self, obj):
+        if not hasattr(obj, "_cached_assigned_assessments"):
+            obj._cached_assigned_assessments = list(obj.assigned_assessments.all())
+        return obj._cached_assigned_assessments
+
     def get_assigned_assessments(self, obj):
-        return [{"id": str(a.id), "code": a.code, "title": a.title} for a in obj.assigned_assessments.all()]
+        return [{"id": str(a.id), "code": a.code, "title": a.title} for a in self._get_assessments(obj)]
 
     def get_assessment_id(self, obj):
-        first_a = obj.assigned_assessments.first()
-        return str(first_a.id) if first_a else None
+        assessments = self._get_assessments(obj)
+        return str(assessments[0].id) if assessments else None
 
     def get_assessment_title(self, obj):
-        first_a = obj.assigned_assessments.first()
-        return first_a.title if first_a else ""
+        assessments = self._get_assessments(obj)
+        return assessments[0].title if assessments else ""
 
     def validate_prompt(self, value):
         if not value or not value.strip():
@@ -847,6 +852,7 @@ class AdminIntegrityEventSerializer(serializers.ModelSerializer):
             "event_type",
             "metadata",
             "server_timestamp",
+            "client_timestamp",
             "timestamp",
             "created_at",
             "is_reviewed",

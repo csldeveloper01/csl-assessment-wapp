@@ -7,6 +7,7 @@ import {
   createAdminSection,
   updateAdminSection,
   deleteAdminSection,
+  bulkDeleteAdminSections,
   type AdminAssessmentConfig,
   type AdminSection,
 } from '../../api/admin';
@@ -22,6 +23,8 @@ export function AdminConfigView() {
   // Reusable Section Library State
   const [sections, setSections] = useState<AdminSection[]>([]);
   const [sectionsLoading, setSectionsLoading] = useState(false);
+  const [selectedSectionIds, setSelectedSectionIds] = useState<number[]>([]);
+  const [bulkDeletingSections, setBulkDeletingSections] = useState(false);
   const [sectionModalOpen, setSectionModalOpen] = useState(false);
   const [editingSection, setEditingSection] = useState<AdminSection | null>(null);
   const [sectionForm, setSectionForm] = useState({
@@ -180,10 +183,49 @@ export function AdminConfigView() {
     try {
       const res = await deleteAdminSection(section.id);
       setSectionSuccess(res.message || `Section "${section.name}" deleted successfully.`);
+      setSelectedSectionIds((prev) => prev.filter((id) => id !== section.id));
       loadSections();
     } catch (err: any) {
       const detailMsg = formatApiError(err, 'Cannot delete section.');
       alert(`Deletion Denied: ${detailMsg}`);
+    }
+  };
+
+  const handleToggleSelectAllSections = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.checked) {
+      setSelectedSectionIds(sections.map((s) => s.id));
+    } else {
+      setSelectedSectionIds([]);
+    }
+  };
+
+  const handleToggleSelectSection = (id: number) => {
+    setSelectedSectionIds((prev) =>
+      prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id]
+    );
+  };
+
+  const handleBulkDeleteSections = async () => {
+    if (selectedSectionIds.length === 0) return;
+    const confirmDelete = window.confirm(
+      `Are you sure you want to delete ${selectedSectionIds.length} selected reusable section(s)?\n\nSections referenced by existing questions or assessments will be protected and will block the deletion.`
+    );
+    if (!confirmDelete) return;
+
+    setBulkDeletingSections(true);
+    setSectionError('');
+    setSectionSuccess('');
+    try {
+      const res = await bulkDeleteAdminSections(selectedSectionIds);
+      setSectionSuccess(res.message);
+      setSelectedSectionIds([]);
+      loadSections();
+    } catch (err: any) {
+      const msg = formatApiError(err, 'Failed to bulk delete sections.');
+      alert(`Deletion Denied: ${msg}`);
+      setSectionError(msg);
+    } finally {
+      setBulkDeletingSections(false);
     }
   };
 
@@ -765,6 +807,87 @@ export function AdminConfigView() {
           </div>
         )}
 
+        {/* Section Bulk Action Bar */}
+        {selectedSectionIds.length > 0 && (
+          <div
+            style={{
+              marginBottom: '16px',
+              padding: '12px 18px',
+              backgroundColor: '#EFF6FF',
+              border: '1px solid #BFDBFE',
+              borderRadius: '8px',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  width: '24px',
+                  height: '24px',
+                  borderRadius: '50%',
+                  backgroundColor: '#1D4ED8',
+                  color: '#FFFFFF',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                }}
+              >
+                {selectedSectionIds.length}
+              </span>
+              <span style={{ fontSize: '13px', fontWeight: 600, color: '#1E40AF' }}>
+                {selectedSectionIds.length} section{selectedSectionIds.length === 1 ? '' : 's'} selected
+              </span>
+            </div>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              <button
+                type="button"
+                onClick={() => setSelectedSectionIds([])}
+                style={{
+                  padding: '6px 12px',
+                  backgroundColor: '#FFFFFF',
+                  color: '#475569',
+                  border: '1px solid #CBD5E1',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                }}
+              >
+                Deselect All
+              </button>
+              <button
+                type="button"
+                onClick={handleBulkDeleteSections}
+                disabled={bulkDeletingSections}
+                style={{
+                  padding: '6px 14px',
+                  backgroundColor: '#DC2626',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '6px',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: bulkDeletingSections ? 'not-allowed' : 'pointer',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                }}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="3 6 5 6 21 6"></polyline>
+                  <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                </svg>
+                <span>{bulkDeletingSections ? 'Deleting...' : `Delete Selected (${selectedSectionIds.length})`}</span>
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Section Table */}
         {sectionsLoading ? (
           <div style={{ padding: '32px', textAlign: 'center', color: '#64748B', fontSize: '13px' }}>
@@ -779,8 +902,20 @@ export function AdminConfigView() {
             <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '13px' }}>
               <thead>
                 <tr style={{ backgroundColor: '#F8FAFC', borderBottom: '1px solid #E2E8F0' }}>
-                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>SECTION CODE</th>
-                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>NAME & DESCRIPTION</th>
+                  <th style={{ padding: '10px 14px', width: '40px', textAlign: 'center' }}>
+                    <input
+                      type="checkbox"
+                      checked={sections.length > 0 && selectedSectionIds.length === sections.length}
+                      ref={(el) => {
+                        if (el) el.indeterminate = selectedSectionIds.length > 0 && selectedSectionIds.length < sections.length;
+                      }}
+                      onChange={handleToggleSelectAllSections}
+                      style={{ cursor: 'pointer', width: '15px', height: '15px', accentColor: '#1455B8' }}
+                      title="Select / Deselect All Sections"
+                    />
+                  </th>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>SECTION ID</th>
+                  <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569' }}>SECTION TITLE & DESCRIPTION</th>
                   <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>QUESTIONS POOL</th>
                   <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>ASSESSMENTS USING</th>
                   <th style={{ padding: '10px 14px', fontWeight: 700, color: '#475569', textAlign: 'center' }}>STATUS</th>
@@ -788,8 +923,25 @@ export function AdminConfigView() {
                 </tr>
               </thead>
               <tbody>
-                {sections.map((sec) => (
-                  <tr key={sec.id} style={{ borderBottom: '1px solid #F1F5F9' }}>
+                {sections.map((sec) => {
+                  const isSelected = selectedSectionIds.includes(sec.id);
+                  return (
+                  <tr
+                    key={sec.id}
+                    style={{
+                      borderBottom: '1px solid #F1F5F9',
+                      backgroundColor: isSelected ? '#F0F7FF' : 'transparent',
+                      transition: 'background-color 0.15s',
+                    }}
+                  >
+                    <td style={{ padding: '12px 14px', textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectSection(sec.id)}
+                        style={{ cursor: 'pointer', width: '15px', height: '15px', accentColor: '#1455B8' }}
+                      />
+                    </td>
                     <td style={{ padding: '12px 14px' }}>
                       <span
                         style={{
@@ -869,7 +1021,8 @@ export function AdminConfigView() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                    );
+                  })}
               </tbody>
             </table>
           </div>

@@ -434,9 +434,27 @@ class AttemptStateView(APIView):
     permission_classes = [AllowAny]
 
     def get(self, request, attempt_id):
-        attempt = get_object_or_404(AssessmentAttempt, id=attempt_id)
+        attempt = get_object_or_404(
+            AssessmentAttempt.objects.select_related(
+                "candidate", "candidate__college_ref", "assessment", "config"
+            ).prefetch_related(
+                "question_snapshots",
+                "assessment__section_allocations__section",
+            ),
+            id=attempt_id,
+        )
         if not verify_attempt_ownership(request, attempt):
             return Response({"detail": "Access forbidden: you do not own this attempt."}, status=status.HTTP_403_FORBIDDEN)
+
+        # If attempt was paused, resume it upon reconnection
+        if attempt.state == AssessmentAttempt.State.IN_PROGRESS and attempt.is_paused:
+            credited = attempt.resume_attempt()
+            if credited > 0:
+                IntegrityEvent.objects.create(
+                    attempt=attempt,
+                    event_type=IntegrityEvent.EventType.RECONNECTED,
+                    metadata={"credited_seconds": credited, "source": "ATTEMPT_STATE_RECONNECT"},
+                )
 
         # Check timeout server-side
         if attempt.state == AssessmentAttempt.State.IN_PROGRESS and attempt.is_expired():
@@ -472,6 +490,150 @@ class SaveAnswerView(APIView):
                 "selected_option": snapshot.selected_option,
                 "saved_at": snapshot.answered_at,
                 "status": "saved",
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class AttemptHeartbeatView(APIView):
+    """
+    Heartbeat and connection health monitor for active candidate attempts.
+    - Synchronizes authoritative server timer
+    - Resumes paused timer upon reconnect
+    - Gracefully pauses timer if explicit disconnect reported
+    - Enforces timeout server-side
+    - Throttled to prevent request storms
+    """
+    authentication_classes = [CandidateAssessmentAuthentication]
+    permission_classes = [AllowAny]
+
+    def post(self, request, attempt_id):
+        attempt = (
+            AssessmentAttempt.objects.select_for_update()
+            .filter(id=attempt_id)
+            .first()
+        )
+        if not attempt:
+            return Response({"detail": "Attempt not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if not verify_attempt_ownership(request, attempt):
+            return Response({"detail": "Access forbidden: you do not own this attempt."}, status=status.HTTP_403_FORBIDDEN)
+
+        now = timezone.now()
+
+        if attempt.state in [
+            AssessmentAttempt.State.SUBMITTED,
+            AssessmentAttempt.State.TIMED_OUT,
+            AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+        ]:
+            return Response(
+                {
+                    "status": "finalized",
+                    "state": attempt.state,
+                    "remaining_seconds": 0,
+                    "server_time": now.isoformat(),
+                    "is_paused": False,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        if attempt.is_expired():
+            attempt = finalize_assessment_attempt(attempt, final_state=AssessmentAttempt.State.TIMED_OUT)
+            return Response(
+                {
+                    "status": "expired",
+                    "state": attempt.state,
+                    "remaining_seconds": 0,
+                    "server_time": now.isoformat(),
+                    "is_paused": False,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        action = request.data.get("action", "").lower()
+        if action == "pause":
+            if not attempt.is_paused:
+                attempt.pause_attempt(at_time=now)
+                IntegrityEvent.objects.create(
+                    attempt=attempt,
+                    event_type=IntegrityEvent.EventType.TAB_HIDDEN,
+                    metadata={"reason": "CLIENT_OFFLINE_PAUSE", "paused_at": now.isoformat()},
+                )
+        else:
+            if attempt.is_paused:
+                credited = attempt.resume_attempt(at_time=now)
+                if credited > 0:
+                    IntegrityEvent.objects.create(
+                        attempt=attempt,
+                        event_type=IntegrityEvent.EventType.RECONNECTED,
+                        metadata={"credited_seconds": credited, "source": "HEARTBEAT_RESUME"},
+                    )
+            else:
+                attempt.last_heartbeat = now
+                attempt.save(update_fields=["last_heartbeat", "updated_at"])
+
+        return Response(
+            {
+                "status": "ok",
+                "attempt_id": str(attempt.id),
+                "state": attempt.state,
+                "remaining_seconds": attempt.get_remaining_seconds(),
+                "server_time": now.isoformat(),
+                "is_paused": attempt.is_paused,
+                "total_paused_seconds": attempt.total_paused_seconds,
+                "max_disconnection_grace_seconds": attempt.max_disconnection_grace_seconds,
+                "deadline": attempt.deadline.isoformat() if attempt.deadline else None,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SyncAnswersView(APIView):
+    """
+    Batch answer synchronization for network recovery.
+    Applies multiple locally persisted answers idempotently within a single transaction.
+    """
+    authentication_classes = [CandidateAssessmentAuthentication]
+    permission_classes = [AllowAny]
+
+    def post(self, request, attempt_id):
+        attempt = get_object_or_404(AssessmentAttempt, id=attempt_id)
+        if not verify_attempt_ownership(request, attempt):
+            return Response({"detail": "Access forbidden: you do not own this attempt."}, status=status.HTTP_403_FORBIDDEN)
+
+        if attempt.state != AssessmentAttempt.State.IN_PROGRESS:
+            return Response({"detail": f"Attempt is not active (state: {attempt.state})."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if attempt.is_expired():
+            finalize_assessment_attempt(attempt, final_state=AssessmentAttempt.State.TIMED_OUT)
+            return Response({"detail": "Assessment time has expired."}, status=status.HTTP_400_BAD_REQUEST)
+
+        answers = request.data.get("answers", [])
+        if not isinstance(answers, list):
+            return Response({"detail": "Answers must be a list."}, status=status.HTTP_400_BAD_REQUEST)
+
+        synced_orders = []
+        now = timezone.now()
+
+        with transaction.atomic():
+            snapshots = {s.question_order: s for s in attempt.question_snapshots.select_for_update().all()}
+            for item in answers:
+                if not isinstance(item, dict):
+                    continue
+                q_order = item.get("question_order")
+                sel_opt = (item.get("selected_option") or "").strip().upper()
+                if q_order in snapshots and sel_opt in ("", "A", "B", "C", "D"):
+                    snap = snapshots[q_order]
+                    snap.selected_option = sel_opt
+                    snap.answered_at = now
+                    snap.save(update_fields=["selected_option", "answered_at", "updated_at"])
+                    synced_orders.append(q_order)
+
+        return Response(
+            {
+                "status": "synced",
+                "synced_count": len(synced_orders),
+                "synced_orders": synced_orders,
             },
             status=status.HTTP_200_OK,
         )

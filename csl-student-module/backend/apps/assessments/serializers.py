@@ -1,4 +1,5 @@
 import re
+from collections import defaultdict
 from rest_framework import serializers
 from django.utils import timezone
 from .models import (
@@ -132,6 +133,9 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
             "remaining_tab_switches",
             "is_flagged",
             "flag_reason",
+            "is_paused",
+            "total_paused_seconds",
+            "max_disconnection_grace_seconds",
             "sections",
             "questions",
         ]
@@ -155,14 +159,19 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
                     ]
             except Exception:
                 pass
-        # Deriving from snapshots if assessment has no allocations or legacy
+        # Deriving in-memory from snapshots if assessment has no allocations or legacy
         seen_sections = []
         added = set()
-        for s in obj.question_snapshots.order_by("question_order"):
+        snapshots_list = list(obj.question_snapshots.all())
+        counts_by_sec = defaultdict(int)
+        for s in snapshots_list:
+            counts_by_sec[s.section_type] += 1
+
+        for s in sorted(snapshots_list, key=lambda x: x.question_order):
             sec = s.section_type
             if sec not in added:
                 added.add(sec)
-                count = obj.question_snapshots.filter(section_type=sec).count()
+                count = counts_by_sec[sec]
                 name = "Aptitude" if sec == "APTITUDE" else ("Coding Fundamentals" if sec == "CODING" else sec.replace("_", " ").title())
                 seen_sections.append({
                     "id": len(added),
@@ -192,10 +201,7 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
         return obj.question_snapshots.count() or 50
 
     def get_remaining_seconds(self, obj):
-        if not obj.deadline:
-            return 0
-        diff = (obj.deadline - timezone.now()).total_seconds()
-        return max(0, int(diff))
+        return obj.get_remaining_seconds()
 
     def get_server_time(self, obj):
         return timezone.now().isoformat()
