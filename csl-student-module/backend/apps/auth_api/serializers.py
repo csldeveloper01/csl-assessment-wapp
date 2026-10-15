@@ -5,19 +5,56 @@ User = get_user_model()
 
 
 class RegisterSerializer(serializers.Serializer):
-    email = serializers.EmailField()
-    name = serializers.CharField(max_length=150)
-    password = serializers.CharField(min_length=8, write_only=True)
+    email = serializers.EmailField(
+        required=True,
+        max_length=254,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
+
+    name = serializers.CharField(
+        required=True,
+        max_length=50,
+        allow_blank=False,
+        trim_whitespace=True,
+    )
+
+    password = serializers.CharField(
+        min_length=8,
+        write_only=True,
+        required=True,
+        allow_blank=False,
+        trim_whitespace=False,
+    )
 
     def validate_email(self, value):
-        if User.objects.filter(email=value.lower()).exists():
-            raise serializers.ValidationError("An account with this email already exists.")
-        return value.lower()
+        value = value.strip().lower()
+
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError(
+                "An account with this email already exists."
+            )
+
+        return value
 
     def validate_name(self, value):
         value = value.strip()
+
         if not value:
-            raise serializers.ValidationError("Name is required.")
+            raise serializers.ValidationError("Full name is required.")
+
+        if len(value) > 50:
+            raise serializers.ValidationError(
+                "Full name cannot exceed 50 characters."
+            )
+
+        import re
+
+        if not re.fullmatch(r"[A-Za-z]+(?:[ '-][A-Za-z]+)*", value):
+            raise serializers.ValidationError(
+                "Enter a valid name using letters, spaces, hyphens, or apostrophes."
+            )
+
         return value
 
     def create(self, validated_data):
@@ -25,7 +62,7 @@ class RegisterSerializer(serializers.Serializer):
         name = validated_data["name"]
         password = validated_data["password"]
 
-        # username is required by AbstractUser; use email as username
+        # Preserve the existing pending-approval registration flow.
         user = User.objects.create_user(
             username=email,
             email=email,
@@ -34,9 +71,10 @@ class RegisterSerializer(serializers.Serializer):
             role=User.Role.STUDENT,
             status=User.AccountStatus.PENDING,
         )
+
         return user
 
 
 class LoginSerializer(serializers.Serializer):
-    email = serializers.CharField()
+    email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
