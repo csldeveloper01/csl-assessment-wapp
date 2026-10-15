@@ -734,7 +734,13 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         raise ValidationError({"detail": f"Maximum attempts ({max_allowed}) reached for this assessment."})
 
     # Validate bank sufficiency for this assessment
+    stage_started = time.perf_counter()
     validate_question_bank_sufficiency(assessment=assessment)
+    logger.info(
+        "ASSESSMENT_QUERY_TIMING stage=bank_validation duration_ms=%.1f candidate_id=%s",
+        (time.perf_counter() - stage_started) * 1000,
+        candidate.id,
+    )
     mark("bank_validation")
 
     # Dynamic or legacy question selection
