@@ -1,4 +1,6 @@
 import csv
+import logging
+import time
 import io
 import random
 import re
@@ -20,6 +22,7 @@ from .models import (
     AssessmentAuditLog,
 )
 
+logger = logging.getLogger(__name__)
 
 def log_assessment_audit(action: str, entity_type: str, entity_id: str, user=None, details=None):
     """
@@ -636,6 +639,19 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         config = assessment
         assessment = None
 
+    perf_started = time.perf_counter()
+    perf_marks = {}
+
+    def mark(label):
+        now = time.perf_counter()
+        perf_marks[label] = round((now - perf_started) * 1000, 1)
+        logger.info(
+            "ASSESSMENT_SERVICE_TIMING stage=%s elapsed_ms=%.1f candidate_id=%s",
+            label,
+            perf_marks[label],
+            candidate.id,
+        )
+
     # Fallback / resolve assessment & config
     if not assessment:
         if candidate.college_ref:
@@ -651,6 +667,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
 
     # Lock candidate row for concurrency safety in PostgreSQL
     locked_candidate = Candidate.objects.select_for_update().get(id=candidate.id)
+    mark("candidate_lock")
 
     # Backfill college_ref if missing from candidate
     if not locked_candidate.college_ref:
@@ -710,6 +727,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
         ],
     ).count()
+    mark("attempt_checks")    
 
     max_allowed = assessment.max_attempts if assessment else config.max_attempts
     if completed_attempts >= max_allowed:
@@ -717,6 +735,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
 
     # Validate bank sufficiency for this assessment
     validate_question_bank_sufficiency(assessment=assessment)
+    mark("bank_validation")
 
     # Dynamic or legacy question selection
     all_selected = []
@@ -771,7 +790,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             all_selected.append((q, i + 1, QuestionBank.SectionType.APTITUDE))
         for i, q in enumerate(selected_coding):
             all_selected.append((q, i + apt_count + 1, QuestionBank.SectionType.CODING))
-
+    mark("question_selection")
     if len(all_selected) != total_required:
         raise ValidationError(
             {"detail": f"Failed to generate assessment: expected {total_required} questions, selected {len(all_selected)}."}
@@ -832,6 +851,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         snapshot_order += 1
 
     AttemptQuestionSnapshot.objects.bulk_create(snapshots)
+    mark("snapshot_creation")
 
     IntegrityEvent.objects.create(
         attempt=attempt,
@@ -842,6 +862,12 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             "assessment_code": assessment.code if assessment else "LEGACY",
         },
     )
+    mark("integrity_event")
+    logger.info(
+        "ASSESSMENT_SERVICE_TIMING total_ms=%.1f candidate_id=%s",
+        (time.perf_counter() - perf_started) * 1000,
+        candidate.id,
+    )    
 
     return attempt
 
