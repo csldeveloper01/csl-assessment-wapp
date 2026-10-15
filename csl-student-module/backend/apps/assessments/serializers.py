@@ -143,8 +143,17 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
     def get_sections(self, obj):
         if obj.assessment:
             try:
-                allocs = obj.assessment.section_allocations.select_related("section").order_by("order", "id")
-                if allocs.exists():
+                # Use prefetched section allocations if available to avoid extra DB roundtrips
+                if (
+                    hasattr(obj.assessment, "_prefetched_objects_cache")
+                    and "section_allocations" in obj.assessment._prefetched_objects_cache
+                ):
+                    allocs = list(obj.assessment.section_allocations.all())
+                else:
+                    allocs = list(obj.assessment.section_allocations.select_related("section").all())
+
+                if allocs:
+                    allocs.sort(key=lambda a: (a.order, a.id))
                     return [
                         {
                             "id": a.section.id,
@@ -198,6 +207,8 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
             return obj.assessment.total_marks
         if obj.config:
             return obj.config.total_marks
+        if hasattr(obj, "_prefetched_objects_cache") and "question_snapshots" in obj._prefetched_objects_cache:
+            return len(obj.question_snapshots.all()) or 50
         return obj.question_snapshots.count() or 50
 
     def get_remaining_seconds(self, obj):

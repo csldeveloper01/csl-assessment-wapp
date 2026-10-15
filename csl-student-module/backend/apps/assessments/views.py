@@ -392,7 +392,10 @@ class StartAssessmentView(APIView):
         assessment_id = request.data.get("assessment_id")
         assessment = None
         if assessment_id:
-            assessment = Assessment.objects.filter(id=assessment_id).first()
+            assessment = Assessment.objects.prefetch_related(
+                "eligible_colleges",
+                "section_allocations__section",
+            ).filter(id=assessment_id).first()
             if not assessment:
                 return Response(
                     {"detail": f"Assessment '{assessment_id}' not found."},

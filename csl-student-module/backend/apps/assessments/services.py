@@ -89,9 +89,9 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
     Supports dynamic section allocations with fallback to legacy aptitude and coding counts.
     """
     has_assessment_questions = (
-    assessment.questions.exists()
-    if assessment
-    else False
+        assessment.questions.exists()
+        if assessment
+        else False
     )
 
     scope_name = (
@@ -101,15 +101,14 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
     )
     errors = []
 
-    has_allocations = False
-    try:
-        if assessment and assessment.section_allocations.exists():
-            has_allocations = True
-    except Exception:
-        has_allocations = False
+    allocations = (
+        list(assessment.section_allocations.select_related("section").all())
+        if (assessment and assessment.pk)
+        else []
+    )
 
-    if has_allocations:
-        for alloc in assessment.section_allocations.select_related("section").all():
+    if allocations:
+        for alloc in allocations:
             sec = alloc.section
             needed = alloc.question_count
             if needed <= 0:
@@ -117,7 +116,6 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
             sec_q_filter = (
                 models.Q(section=sec)
                 | models.Q(section_type__iexact=sec.code)
-                | models.Q(section__code__iexact=sec.code)
             )
             if has_assessment_questions:
                 available = assessment.questions.filter(sec_q_filter, is_active=True).distinct().count()
@@ -171,6 +169,7 @@ def select_balanced_questions(
     assessment: Assessment = None,
     section_obj=None,
     exclude_question_ids: set = None,
+    has_pool_questions: bool = None,
 ):
     """
     Selects exactly required_count questions distributed evenly across available difficulty levels.
@@ -203,7 +202,6 @@ def select_balanced_questions(
         q_filter = (
             models.Q(section=sec)
             | models.Q(section_type__iexact=sec_code)
-            | models.Q(section__code__iexact=sec_code)
         )
     else:
         q_filter = (
@@ -212,7 +210,10 @@ def select_balanced_questions(
             | models.Q(section__name__iexact=sec_code)
         )
 
-    base_qs = assessment.questions if (assessment and assessment.questions.exists()) else QuestionBank.objects
+    if has_pool_questions is None:
+        has_pool_questions = bool(assessment and assessment.questions.exists())
+
+    base_qs = assessment.questions if (assessment and has_pool_questions) else QuestionBank.objects
     query = base_qs.filter(q_filter, is_active=True)
     if exclude_question_ids:
         query = query.exclude(id__in=exclude_question_ids)
@@ -225,14 +226,11 @@ def select_balanced_questions(
     if len(qs) < required_count:
         scope = f"in pool for '{assessment.title}'" if assessment else "in bank"
         shortage = required_count - len(qs)
-        raise ValidationError(
-            {
-                "bank_error": (
-                    f"Insufficient '{sec_name}' ({sec_code}) questions {scope}: "
-                    f"found {len(qs)}, requires {required_count} (shortage of {shortage})."
-                )
-            }
-        )
+        if sec_code in ["APTITUDE", "CODING"]:
+            err_msg = f"Insufficient {sec_code.lower()} questions in {scope}: found {len(qs)}, requires {required_count} (shortage of {shortage})."
+        else:
+            err_msg = f"Insufficient '{sec_name}' ({sec_code}) questions {scope}: found {len(qs)}, requires {required_count} (shortage of {shortage})."
+        raise ValidationError({"bank_error": err_msg})
 
     # Stratified sampling across difficulty buckets
     buckets = defaultdict(list)
@@ -675,8 +673,12 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
     if not config:
         config = get_or_create_default_config()
 
-    # Lock candidate row for concurrency safety in PostgreSQL
-    locked_candidate = Candidate.objects.select_for_update().get(id=candidate.id)
+    # Lock candidate row for concurrency safety in PostgreSQL (only candidate row locked)
+    locked_candidate = (
+        Candidate.objects.select_for_update(of=("self",))
+        .select_related("college_ref")
+        .get(id=candidate.id)
+    )
     mark("candidate_lock")
 
     # Backfill college_ref if missing from candidate
@@ -706,65 +708,73 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         })
 
     # 4. College eligibility check
-    if locked_candidate.college_ref and not assessment.eligible_colleges.filter(id=locked_candidate.college_ref_id).exists():
-        if assessment.code == "CSL-INITIAL-01":
-            assessment.eligible_colleges.add(locked_candidate.college_ref)
+    if locked_candidate.college_ref:
+        if (
+            hasattr(assessment, "_prefetched_objects_cache")
+            and "eligible_colleges" in assessment._prefetched_objects_cache
+        ):
+            is_enrolled = any(c.id == locked_candidate.college_ref_id for c in assessment.eligible_colleges.all())
         else:
-            raise ValidationError({
-                "detail": f"Your institution ({locked_candidate.college_ref.name}) is not enrolled in '{assessment.title}'."
-            })
+            is_enrolled = assessment.eligible_colleges.filter(id=locked_candidate.college_ref_id).exists()
 
-    # 5. Check if there is already an active attempt in progress for this assessment
-    existing_in_progress = AssessmentAttempt.objects.filter(
-        candidate=locked_candidate,
-        assessment=assessment,
-        state__in=[AssessmentAttempt.State.CREATED, AssessmentAttempt.State.IN_PROGRESS],
-    ).first()
+        if not is_enrolled:
+            if assessment.code == "CSL-INITIAL-01":
+                assessment.eligible_colleges.add(locked_candidate.college_ref)
+            else:
+                raise ValidationError({
+                    "detail": f"Your institution ({locked_candidate.college_ref.name}) is not enrolled in '{assessment.title}'."
+                })
 
+    # 5 & 6. Attempt checks: fetch existing attempts for this candidate & assessment in 1 query
+    attempts = list(
+        AssessmentAttempt.objects.filter(
+            candidate=locked_candidate,
+            assessment=assessment,
+        ).only("id", "state", "deadline", "is_paused", "paused_at", "total_paused_seconds", "max_disconnection_grace_seconds")
+    )
+
+    existing_in_progress = next(
+        (a for a in attempts if a.state in [AssessmentAttempt.State.CREATED, AssessmentAttempt.State.IN_PROGRESS]),
+        None,
+    )
     if existing_in_progress:
         if existing_in_progress.is_expired():
             finalize_assessment_attempt(existing_in_progress, final_state=AssessmentAttempt.State.TIMED_OUT)
             raise ValidationError({"detail": "Your previous assessment attempt has expired."})
         return existing_in_progress
 
-    # 6. Check attempt limit for this assessment
-    completed_attempts = AssessmentAttempt.objects.filter(
-        candidate=locked_candidate,
-        assessment=assessment,
-        state__in=[
+    completed_attempts = sum(
+        1 for a in attempts
+        if a.state in [
             AssessmentAttempt.State.SUBMITTED,
             AssessmentAttempt.State.TIMED_OUT,
             AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
-        ],
-    ).count()
-    mark("attempt_checks")    
+        ]
+    )
+    mark("attempt_checks")
 
     max_allowed = assessment.max_attempts if assessment else config.max_attempts
     if completed_attempts >= max_allowed:
         raise ValidationError({"detail": f"Maximum attempts ({max_allowed}) reached for this assessment."})
 
-    # Validate bank sufficiency for this assessment
-    stage_started = time.perf_counter()
-    validate_question_bank_sufficiency(assessment=assessment)
-    logger.info(
-        "ASSESSMENT_QUERY_TIMING stage=bank_validation duration_ms=%.1f candidate_id=%s",
-        (time.perf_counter() - stage_started) * 1000,
-        candidate.id,
-    )
-    mark("bank_validation")
-
     # Dynamic or legacy question selection
+    has_pool_questions = bool(assessment and assessment.questions.exists())
+
+    if (
+        hasattr(assessment, "_prefetched_objects_cache")
+        and "section_allocations" in assessment._prefetched_objects_cache
+    ):
+        allocations = list(assessment.section_allocations.all())
+        allocations.sort(key=lambda a: (a.order, a.id))
+    elif assessment and assessment.pk:
+        allocations = list(assessment.section_allocations.select_related("section").order_by("order", "id"))
+    else:
+        allocations = []
+
     all_selected = []
     selected_question_ids = set()
-    has_allocations = False
-    try:
-        if assessment and assessment.section_allocations.exists():
-            has_allocations = True
-    except Exception:
-        has_allocations = False
 
-    if has_allocations:
-        allocations = list(assessment.section_allocations.select_related("section").order_by("order", "id"))
+    if allocations:
         total_required = sum(alloc.question_count for alloc in allocations)
         order_counter = 1
         for alloc in allocations:
@@ -774,6 +784,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
                 assessment=assessment,
                 section_obj=alloc.section,
                 exclude_question_ids=selected_question_ids,
+                has_pool_questions=has_pool_questions,
             )
             for q in sec_questions:
                 all_selected.append((q, order_counter, alloc.section.code))
@@ -789,6 +800,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             apt_count,
             assessment=assessment,
             exclude_question_ids=selected_question_ids,
+            has_pool_questions=has_pool_questions,
         )
         for q in selected_aptitude:
             selected_question_ids.add(q.id)
@@ -798,6 +810,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             cod_count,
             assessment=assessment,
             exclude_question_ids=selected_question_ids,
+            has_pool_questions=has_pool_questions,
         )
         for q in selected_coding:
             selected_question_ids.add(q.id)
@@ -806,6 +819,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             all_selected.append((q, i + 1, QuestionBank.SectionType.APTITUDE))
         for i, q in enumerate(selected_coding):
             all_selected.append((q, i + apt_count + 1, QuestionBank.SectionType.CODING))
+
     mark("question_selection")
     if len(all_selected) != total_required:
         raise ValidationError(
@@ -977,7 +991,8 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
                 coding_score += q_marks
         else:
             s.is_correct = False
-        s.save(update_fields=["is_correct", "updated_at"])
+
+    AttemptQuestionSnapshot.objects.bulk_update(snapshots, ["is_correct"])
 
     max_marks = (
         locked_attempt.assessment.total_marks

@@ -460,3 +460,30 @@ class ProductionRobustnessTests(TestCase):
         self.assertEqual(new_sec.code, "DSA_NEW")
         q.refresh_from_db()
         self.assertEqual(q.section_type, "DSA_NEW")
+
+    def test_assessment_start_query_budget(self):
+        """Verifies that starting an assessment executes an optimized number of queries."""
+        cand = Candidate.objects.create(
+            full_name="Query Budget Candidate",
+            register_number="QBC001",
+            college=self.college.name,
+            college_ref=self.college,
+            email="qbc001@apex.edu",
+            department="CSE",
+            year_of_study="4",
+        )
+        token = generate_candidate_token(cand.id)
+
+        with CaptureQueriesContext(connection) as ctx:
+            response = self.client.post(
+                "/api/assessment/start/",
+                {"assessment_id": str(self.assessment.id)},
+                content_type="application/json",
+                HTTP_AUTHORIZATION=f"Bearer {token}",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        # Baseline was 31 queries; with query combining, prefetching, and eliminating redundant validation queries, count is <= 22
+        self.assertLessEqual(len(ctx.captured_queries), 22, f"Executed {len(ctx.captured_queries)} queries (expected <= 22)")
+        print(f"\n[QUERY_BUDGET_VERIFIED] Assessment start completed in {len(ctx.captured_queries)} queries (budget <= 22).")
+

@@ -95,6 +95,8 @@ class QuestionBank(models.Model):
         indexes = [
             models.Index(fields=["section_type", "is_active"]),
             models.Index(fields=["section_type", "difficulty", "is_active"]),
+            models.Index(fields=["section", "is_active"]),
+            models.Index(fields=["section", "difficulty", "is_active"]),
         ]
 
     def __str__(self):
@@ -519,6 +521,7 @@ class AssessmentAttempt(models.Model):
         ordering = ["-created_at"]
         indexes = [
             models.Index(fields=["candidate", "state"]),
+            models.Index(fields=["candidate", "assessment", "state"]),
             models.Index(fields=["state", "deadline"]),
             models.Index(fields=["is_paused", "state"]),
         ]

@@ -72,7 +72,7 @@ class CandidateAssessmentAuthentication(BaseAuthentication):
         attempt_id = data.get("attempt_id")
 
         try:
-            candidate = Candidate.objects.get(id=candidate_id)
+            candidate = Candidate.objects.select_related("college_ref").get(id=candidate_id)
         except Candidate.DoesNotExist:
             raise exceptions.AuthenticationFailed("Candidate identity not found.")
 
