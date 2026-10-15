@@ -13,6 +13,88 @@ import {
 import cslTypographyLogo from '../../assets/CSL-TYPOGRAPHY.png';
 import backgroundImage from '../../assets/background.png';
 
+function validateFullName(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return 'Please enter your full name.';
+  }
+  if (trimmed.length < 2) {
+    return 'Full name must be at least 2 characters.';
+  }
+  if (trimmed.length > 50) {
+    return 'Full name cannot exceed 50 characters.';
+  }
+  if (!/^[A-Za-z]+(?:[ '-][A-Za-z]+)*$/.test(trimmed)) {
+    return 'Enter a valid name using letters, spaces, hyphens, or apostrophes.';
+  }
+  return '';
+}
+
+function validateRegisterNumber(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return 'Please enter your register / roll number.';
+  }
+  if (trimmed.length < 2) {
+    return 'Register number must be at least 2 characters.';
+  }
+  if (trimmed.length > 25) {
+    return 'Register number cannot exceed 25 characters.';
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9\s\-_/]*$/.test(trimmed)) {
+    return 'Register / roll number must contain only letters, numbers, hyphens, slashes, or spaces.';
+  }
+  return '';
+}
+
+function validateEmail(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return 'Please enter your college email address.';
+  }
+  if (trimmed.length > 254) {
+    return 'College email cannot exceed 254 characters.';
+  }
+  if (/\s/.test(trimmed)) {
+    return 'College email cannot contain spaces.';
+  }
+  const emailPattern = /^[a-zA-Z0-9_\-\.\+]+@[a-zA-Z0-9\-\.]+\.[a-zA-Z0-9\-]+$/;
+  if (!emailPattern.test(trimmed)) {
+    return 'Please enter a valid college email address.';
+  }
+  return '';
+}
+
+function validateDepartment(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return 'Please enter your department / course.';
+  }
+  if (trimmed.length < 2) {
+    return 'Department must be at least 2 characters.';
+  }
+  return '';
+}
+
+function validateCollege(collegeId?: number, college?: string): string {
+  if (!collegeId && (!college || !college.trim())) {
+    return 'Please select your college / institution.';
+  }
+  return '';
+}
+
+function validatePhone(raw: string): string {
+  const trimmed = raw.trim();
+  const phoneDigits = trimmed.replace(/\D/g, '');
+  if (!trimmed) {
+    return 'Mobile phone number is mandatory.';
+  }
+  if (phoneDigits.length !== 10) {
+    return 'Please enter a valid 10-digit mobile phone number.';
+  }
+  return '';
+}
+
 export function AssessmentRegisterPage() {
   const navigate = useNavigate();
 
@@ -78,6 +160,41 @@ export function AssessmentRegisterPage() {
     };
   }, []);
 
+  const handleBlur = (field: keyof RegistrationPayload | 'college_id') => {
+    let err = '';
+    switch (field) {
+      case 'full_name':
+        err = validateFullName(formData.full_name);
+        break;
+      case 'register_number':
+        err = validateRegisterNumber(formData.register_number);
+        break;
+      case 'college_id':
+      case 'college':
+        err = validateCollege(formData.college_id, formData.college);
+        break;
+      case 'email':
+        err = validateEmail(formData.email);
+        break;
+      case 'department':
+        err = validateDepartment(formData.department);
+        break;
+      case 'phone_number':
+        err = validatePhone(formData.phone_number);
+        break;
+    }
+
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      if (err) {
+        next[field] = err;
+      } else {
+        delete next[field];
+      }
+      return next;
+    });
+  };
+
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
     const { name, value } = e.target;
     if (name === 'college_id') {
@@ -98,6 +215,9 @@ export function AssessmentRegisterPage() {
         delete next[name];
         return next;
       });
+    }
+    if (error) {
+      setError('');
     }
   };
 
@@ -129,33 +249,50 @@ export function AssessmentRegisterPage() {
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    if (loading) return;
+
     setError('');
+
+    const errors: Record<string, string> = {};
+    const nameErr = validateFullName(formData.full_name);
+    if (nameErr) errors.full_name = nameErr;
+
+    const regErr = validateRegisterNumber(formData.register_number);
+    if (regErr) errors.register_number = regErr;
+
+    const colErr = validateCollege(formData.college_id, formData.college);
+    if (colErr) errors.college_id = colErr;
+
+    const emailErr = validateEmail(formData.email);
+    if (emailErr) errors.email = emailErr;
+
+    const deptErr = validateDepartment(formData.department);
+    if (deptErr) errors.department = deptErr;
+
+    const phoneErr = validatePhone(formData.phone_number);
+    if (phoneErr) errors.phone_number = phoneErr;
+
+    if (Object.keys(errors).length > 0) {
+      setFieldErrors(errors);
+      return;
+    }
+
     setFieldErrors({});
-
-    // Client-side phone validation
-    const trimmedPhone = formData.phone_number.trim();
-    const phoneDigits = trimmedPhone.replace(/\D/g, '');
-    if (!trimmedPhone) {
-      setFieldErrors((prev) => ({ ...prev, phone_number: 'Mobile phone number is mandatory.' }));
-      return;
-    }
-    if (phoneDigits.length !== 10) {
-      setFieldErrors((prev) => ({
-        ...prev,
-        phone_number: 'Please enter a valid 10-digit mobile phone number.',
-      }));
-      return;
-    }
-
-    if (!formData.college_id && !formData.college) {
-      setFieldErrors((prev) => ({ ...prev, college_id: 'Please select an institution.' }));
-      return;
-    }
-
     setLoading(true);
 
+    const payload: RegistrationPayload = {
+      full_name: formData.full_name.trim(),
+      register_number: formData.register_number.trim(),
+      college: formData.college ? formData.college.trim() : '',
+      college_id: formData.college_id,
+      email: formData.email.trim(),
+      department: formData.department.trim(),
+      year_of_study: formData.year_of_study,
+      phone_number: formData.phone_number.trim(),
+    };
+
     try {
-      const res = await registerCandidate(formData);
+      const res = await registerCandidate(payload);
       if (res.is_active_attempt && res.attempt_id) {
         setResumableAttempt(res);
         setStep('resume_attempt');
@@ -172,7 +309,7 @@ export function AssessmentRegisterPage() {
     } catch (err: unknown) {
       if (axios.isAxiosError(err) && err.response) {
         const data = err.response.data;
-        if (typeof data === 'object') {
+        if (typeof data === 'object' && data !== null) {
           const newFieldErrors: Record<string, string> = {};
           let generalMsg = '';
           for (const key of Object.keys(data)) {
@@ -240,21 +377,16 @@ export function AssessmentRegisterPage() {
           {/* CSL Typography Logo */}
           <div
             style={{
-              backgroundColor: '#FFFFFF',
-              padding: '6px 14px',
-              borderRadius: '8px',
-              display: 'inline-flex',
-              alignItems: 'center',
+              display: 'flex',
               justifyContent: 'center',
-              boxShadow: '0 2px 6px rgba(0, 0, 0, 0.05)',
-              border: '1px solid #E2E8F0',
+              alignItems: 'center',
               marginBottom: '20px',
             }}
           >
             <img
               src={cslTypographyLogo}
               alt="CSL Creator Space Lab"
-              style={{ height: '28px', width: 'auto', objectFit: 'contain' }}
+              style={{ height: '30px', width: 'auto', objectFit: 'contain', display: 'block' }}
             />
           </div>
 
@@ -440,21 +572,16 @@ export function AssessmentRegisterPage() {
           {/* CSL Typography Logo */}
           <div
             style={{
-              backgroundColor: '#FFFFFF',
-              padding: '6px 14px',
-              borderRadius: '8px',
-              display: 'inline-flex',
-              alignItems: 'center',
+              display: 'flex',
               justifyContent: 'center',
-              boxShadow: '0 2px 6px rgba(0, 0, 0, 0.05)',
-              border: '1px solid #E2E8F0',
+              alignItems: 'center',
               marginBottom: '20px',
             }}
           >
             <img
               src={cslTypographyLogo}
               alt="CSL Creator Space Lab"
-              style={{ height: '28px', width: 'auto', objectFit: 'contain' }}
+              style={{ height: '30px', width: 'auto', objectFit: 'contain', display: 'block' }}
             />
           </div>
 
@@ -954,24 +1081,19 @@ export function AssessmentRegisterPage() {
         }}
       >
         <div style={{ marginBottom: '22px' }}>
-          {/* CSL Typography Logo at top */}
+          {/* CSL Typography Logo at top - centered and unboxed */}
           <div
             style={{
-              backgroundColor: '#FFFFFF',
-              padding: '6px 14px',
-              borderRadius: '8px',
-              display: 'inline-flex',
-              alignItems: 'center',
+              display: 'flex',
               justifyContent: 'center',
-              boxShadow: '0 2px 6px rgba(0, 0, 0, 0.06)',
-              border: '1px solid #E2E8F0',
-              marginBottom: '14px',
+              alignItems: 'center',
+              marginBottom: '16px',
             }}
           >
             <img
               src={cslTypographyLogo}
               alt="CSL Creator Space Lab"
-              style={{ height: '26px', width: 'auto', objectFit: 'contain' }}
+              style={{ height: '32px', width: 'auto', objectFit: 'contain', display: 'block' }}
             />
           </div>
 
@@ -993,295 +1115,348 @@ export function AssessmentRegisterPage() {
         </div>
 
         {error && (
-            <div
-              style={{
-                backgroundColor: '#FEE2E2',
-                border: '1px solid #FECACA',
-                color: '#991B1B',
-                padding: '12px 16px',
-                borderRadius: '8px',
-                fontSize: '13px',
-                lineHeight: 1.5,
-                marginBottom: '20px',
-              }}
-            >
-              <strong>⚠️ Registration Notice:</strong> {error}
-            </div>
-          )}
+          <div
+            style={{
+              backgroundColor: '#FEE2E2',
+              border: '1px solid #FECACA',
+              color: '#991B1B',
+              padding: '12px 16px',
+              borderRadius: '8px',
+              fontSize: '13px',
+              lineHeight: 1.5,
+              marginBottom: '20px',
+            }}
+          >
+            <strong>⚠️ Registration Notice:</strong> {error}
+          </div>
+        )}
 
-          <form onSubmit={handleSubmit} style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '14px' }}>
-            <div>
+        <form onSubmit={handleSubmit} noValidate style={{ display: 'grid', gridTemplateColumns: '1fr', gap: '14px' }}>
+          <div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
               <label
                 htmlFor="full_name"
-                style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+                style={{ fontSize: '12px', fontWeight: 700, color: '#334155' }}
               >
                 Full Name *
               </label>
+              <span style={{ fontSize: '11px', color: '#94A3B8' }}>{formData.full_name.length}/50</span>
+            </div>
+            <input
+              id="full_name"
+              name="full_name"
+              type="text"
+              required
+              maxLength={50}
+              value={formData.full_name}
+              onChange={handleChange}
+              onBlur={() => handleBlur('full_name')}
+              placeholder="e.g. Aditi Sharma"
+              aria-invalid={Boolean(fieldErrors.full_name)}
+              aria-describedby={fieldErrors.full_name ? 'full_name-error' : undefined}
+              style={{
+                width: '100%',
+                padding: '9px 12px',
+                borderRadius: '8px',
+                border: fieldErrors.full_name ? '1px solid #DC2626' : '1px solid #CBD5E1',
+                fontSize: '13px',
+                color: '#111111',
+                boxSizing: 'border-box',
+                outlineColor: '#1455B8',
+              }}
+            />
+            {fieldErrors.full_name && (
+              <span
+                id="full_name-error"
+                role="alert"
+                style={{ color: '#DC2626', fontSize: '12px', marginTop: '3px', display: 'block', lineHeight: 1.4 }}
+              >
+                {fieldErrors.full_name}
+              </span>
+            )}
+          </div>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                <label
+                  htmlFor="register_number"
+                  style={{ fontSize: '12px', fontWeight: 700, color: '#334155' }}
+                >
+                  Register / Roll Number *
+                </label>
+                <span style={{ fontSize: '11px', color: '#94A3B8' }}>{formData.register_number.length}/25</span>
+              </div>
               <input
-                id="full_name"
-                name="full_name"
+                id="register_number"
+                name="register_number"
                 type="text"
                 required
-                value={formData.full_name}
+                maxLength={25}
+                value={formData.register_number}
                 onChange={handleChange}
-                placeholder="e.g. Aditi Sharma"
+                onBlur={() => handleBlur('register_number')}
+                placeholder="e.g. 721721U101"
+                aria-invalid={Boolean(fieldErrors.register_number)}
+                aria-describedby={fieldErrors.register_number ? 'register_number-error' : undefined}
                 style={{
                   width: '100%',
                   padding: '9px 12px',
                   borderRadius: '8px',
-                  border: fieldErrors.full_name ? '1px solid #DC2626' : '1px solid #CBD5E1',
+                  border: fieldErrors.register_number ? '1px solid #DC2626' : '1px solid #CBD5E1',
                   fontSize: '13px',
                   color: '#111111',
                   boxSizing: 'border-box',
                   outlineColor: '#1455B8',
                 }}
               />
-              {fieldErrors.full_name && (
-                <span style={{ color: '#DC2626', fontSize: '12px', marginTop: '2px', display: 'block' }}>
-                  {fieldErrors.full_name}
+              {fieldErrors.register_number && (
+                <span
+                  id="register_number-error"
+                  role="alert"
+                  style={{ color: '#DC2626', fontSize: '12px', marginTop: '3px', display: 'block', lineHeight: 1.4 }}
+                >
+                  {fieldErrors.register_number}
                 </span>
               )}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div>
-                <label
-                  htmlFor="register_number"
-                  style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
-                >
-                  Register / Roll Number *
-                </label>
-                <input
-                  id="register_number"
-                  name="register_number"
-                  type="text"
-                  required
-                  value={formData.register_number}
-                  onChange={handleChange}
-                  placeholder="e.g. 721721U101"
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: fieldErrors.register_number ? '1px solid #DC2626' : '1px solid #CBD5E1',
-                    fontSize: '13px',
-                    color: '#111111',
-                    boxSizing: 'border-box',
-                    outlineColor: '#1455B8',
-                  }}
-                />
-                {fieldErrors.register_number && (
-                  <span style={{ color: '#DC2626', fontSize: '12px', marginTop: '2px', display: 'block' }}>
-                    {fieldErrors.register_number}
-                  </span>
+            <div>
+              <label
+                htmlFor="college_id"
+                style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+              >
+                College / Institution *
+              </label>
+              <select
+                id="college_id"
+                name="college_id"
+                required
+                disabled={collegesLoading}
+                value={formData.college_id ?? ''}
+                onChange={handleChange}
+                onBlur={() => handleBlur('college_id')}
+                aria-invalid={Boolean(fieldErrors.college_id || fieldErrors.college)}
+                aria-describedby={(fieldErrors.college_id || fieldErrors.college) ? 'college_id-error' : undefined}
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: fieldErrors.college_id || fieldErrors.college ? '1px solid #DC2626' : '1px solid #CBD5E1',
+                  fontSize: '13px',
+                  color: '#111111',
+                  boxSizing: 'border-box',
+                  backgroundColor: collegesLoading ? '#F3F4F6' : '#FFFFFF',
+                  outlineColor: '#1455B8',
+                }}
+              >
+                {collegesLoading ? (
+                  <option value="">Loading enrolled colleges...</option>
+                ) : colleges.length === 0 ? (
+                  <option value="">No active colleges found</option>
+                ) : (
+                  <>
+                    <option value="">-- Select Your College --</option>
+                    {colleges.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} ({c.code}){c.location ? ` — ${c.location}` : ''}
+                      </option>
+                    ))}
+                  </>
                 )}
-              </div>
+              </select>
+              {(fieldErrors.college_id || fieldErrors.college) && (
+                <span
+                  id="college_id-error"
+                  role="alert"
+                  style={{ color: '#DC2626', fontSize: '12px', marginTop: '3px', display: 'block', lineHeight: 1.4 }}
+                >
+                  {fieldErrors.college_id || fieldErrors.college}
+                </span>
+              )}
+            </div>
+          </div>
 
-              <div>
-                <label
-                  htmlFor="college_id"
-                  style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <label
+                htmlFor="email"
+                style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+              >
+                College Email *
+              </label>
+              <input
+                id="email"
+                name="email"
+                type="email"
+                required
+                maxLength={254}
+                value={formData.email}
+                onChange={handleChange}
+                onBlur={() => handleBlur('email')}
+                placeholder="student@college.edu"
+                aria-invalid={Boolean(fieldErrors.email)}
+                aria-describedby={fieldErrors.email ? 'email-error' : undefined}
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: fieldErrors.email ? '1px solid #DC2626' : '1px solid #CBD5E1',
+                  fontSize: '13px',
+                  color: '#111111',
+                  boxSizing: 'border-box',
+                  outlineColor: '#1455B8',
+                }}
+              />
+              {fieldErrors.email && (
+                <span
+                  id="email-error"
+                  role="alert"
+                  style={{ color: '#DC2626', fontSize: '12px', marginTop: '3px', display: 'block', lineHeight: 1.4 }}
                 >
-                  College / Institution *
-                </label>
-                <select
-                  id="college_id"
-                  name="college_id"
-                  required
-                  disabled={collegesLoading}
-                  value={formData.college_id ?? ''}
-                  onChange={handleChange}
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: fieldErrors.college_id || fieldErrors.college ? '1px solid #DC2626' : '1px solid #CBD5E1',
-                    fontSize: '13px',
-                    color: '#111111',
-                    boxSizing: 'border-box',
-                    backgroundColor: collegesLoading ? '#F3F4F6' : '#FFFFFF',
-                    outlineColor: '#1455B8',
-                  }}
-                >
-                  {collegesLoading ? (
-                    <option value="">Loading enrolled colleges...</option>
-                  ) : colleges.length === 0 ? (
-                    <option value="">No active colleges found</option>
-                  ) : (
-                    <>
-                      <option value="">-- Select Your College --</option>
-                      {colleges.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} ({c.code}){c.location ? ` — ${c.location}` : ''}
-                        </option>
-                      ))}
-                    </>
-                  )}
-                </select>
-                {(fieldErrors.college_id || fieldErrors.college) && (
-                  <span style={{ color: '#DC2626', fontSize: '12px', marginTop: '2px', display: 'block' }}>
-                    {fieldErrors.college_id || fieldErrors.college}
-                  </span>
-                )}
-              </div>
+                  {fieldErrors.email}
+                </span>
+              )}
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div>
-                <label
-                  htmlFor="email"
-                  style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+            <div>
+              <label
+                htmlFor="department"
+                style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+              >
+                Department / Course *
+              </label>
+              <input
+                id="department"
+                name="department"
+                type="text"
+                required
+                maxLength={100}
+                value={formData.department}
+                onChange={handleChange}
+                onBlur={() => handleBlur('department')}
+                placeholder="e.g. B.Tech CSE / IT"
+                aria-invalid={Boolean(fieldErrors.department)}
+                aria-describedby={fieldErrors.department ? 'department-error' : undefined}
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: fieldErrors.department ? '1px solid #DC2626' : '1px solid #CBD5E1',
+                  fontSize: '13px',
+                  color: '#111111',
+                  boxSizing: 'border-box',
+                  outlineColor: '#1455B8',
+                }}
+              />
+              {fieldErrors.department && (
+                <span
+                  id="department-error"
+                  role="alert"
+                  style={{ color: '#DC2626', fontSize: '12px', marginTop: '3px', display: 'block', lineHeight: 1.4 }}
                 >
-                  Email Address *
-                </label>
-                <input
-                  id="email"
-                  name="email"
-                  type="email"
-                  required
-                  value={formData.email}
-                  onChange={handleChange}
-                  placeholder="student@college.edu"
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: fieldErrors.email ? '1px solid #DC2626' : '1px solid #CBD5E1',
-                    fontSize: '13px',
-                    color: '#111111',
-                    boxSizing: 'border-box',
-                    outlineColor: '#1455B8',
-                  }}
-                />
-                {fieldErrors.email && (
-                  <span style={{ color: '#DC2626', fontSize: '12px', marginTop: '2px', display: 'block' }}>
-                    {fieldErrors.email}
-                  </span>
-                )}
-              </div>
+                  {fieldErrors.department}
+                </span>
+              )}
+            </div>
+          </div>
 
-              <div>
-                <label
-                  htmlFor="department"
-                  style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
-                >
-                  Department / Course *
-                </label>
-                <input
-                  id="department"
-                  name="department"
-                  type="text"
-                  required
-                  value={formData.department}
-                  onChange={handleChange}
-                  placeholder="e.g. B.Tech CSE / IT"
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: fieldErrors.department ? '1px solid #DC2626' : '1px solid #CBD5E1',
-                    fontSize: '13px',
-                    color: '#111111',
-                    boxSizing: 'border-box',
-                    outlineColor: '#1455B8',
-                  }}
-                />
-                {fieldErrors.department && (
-                  <span style={{ color: '#DC2626', fontSize: '12px', marginTop: '2px', display: 'block' }}>
-                    {fieldErrors.department}
-                  </span>
-                )}
-              </div>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+            <div>
+              <label
+                htmlFor="year_of_study"
+                style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+              >
+                Year of Study *
+              </label>
+              <select
+                id="year_of_study"
+                name="year_of_study"
+                value={formData.year_of_study}
+                onChange={handleChange}
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: '1px solid #CBD5E1',
+                  fontSize: '13px',
+                  color: '#111111',
+                  boxSizing: 'border-box',
+                  backgroundColor: '#FFFFFF',
+                  outlineColor: '#1455B8',
+                }}
+              >
+                <option value="1st Year">1st Year</option>
+                <option value="2nd Year">2nd Year</option>
+                <option value="3rd Year">3rd Year</option>
+                <option value="Final Year">Final Year</option>
+              </select>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-              <div>
-                <label
-                  htmlFor="year_of_study"
-                  style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+            <div>
+              <label
+                htmlFor="phone_number"
+                style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
+              >
+                Mobile Phone Number *
+              </label>
+              <input
+                id="phone_number"
+                name="phone_number"
+                type="tel"
+                required
+                maxLength={15}
+                value={formData.phone_number}
+                onChange={handleChange}
+                onBlur={() => handleBlur('phone_number')}
+                placeholder="10-digit mobile number"
+                aria-invalid={Boolean(fieldErrors.phone_number)}
+                aria-describedby={fieldErrors.phone_number ? 'phone_number-error' : undefined}
+                style={{
+                  width: '100%',
+                  padding: '9px 12px',
+                  borderRadius: '8px',
+                  border: fieldErrors.phone_number ? '1px solid #DC2626' : '1px solid #CBD5E1',
+                  fontSize: '13px',
+                  color: '#111111',
+                  boxSizing: 'border-box',
+                  outlineColor: '#1455B8',
+                }}
+              />
+              {fieldErrors.phone_number && (
+                <span
+                  id="phone_number-error"
+                  role="alert"
+                  style={{ color: '#DC2626', fontSize: '12px', marginTop: '3px', display: 'block', lineHeight: 1.4 }}
                 >
-                  Year of Study *
-                </label>
-                <select
-                  id="year_of_study"
-                  name="year_of_study"
-                  value={formData.year_of_study}
-                  onChange={handleChange}
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: '1px solid #CBD5E1',
-                    fontSize: '13px',
-                    color: '#111111',
-                    boxSizing: 'border-box',
-                    backgroundColor: '#FFFFFF',
-                    outlineColor: '#1455B8',
-                  }}
-                >
-                  <option value="1st Year">1st Year</option>
-                  <option value="2nd Year">2nd Year</option>
-                  <option value="3rd Year">3rd Year</option>
-                  <option value="Final Year">Final Year</option>
-                </select>
-              </div>
-
-              <div>
-                <label
-                  htmlFor="phone_number"
-                  style={{ display: 'block', fontSize: '12px', fontWeight: 700, color: '#334155', marginBottom: '4px' }}
-                >
-                  Mobile Phone Number *
-                </label>
-                <input
-                  id="phone_number"
-                  name="phone_number"
-                  type="tel"
-                  required
-                  value={formData.phone_number}
-                  onChange={handleChange}
-                  placeholder="10-digit mobile number"
-                  style={{
-                    width: '100%',
-                    padding: '9px 12px',
-                    borderRadius: '8px',
-                    border: fieldErrors.phone_number ? '1px solid #DC2626' : '1px solid #CBD5E1',
-                    fontSize: '13px',
-                    color: '#111111',
-                    boxSizing: 'border-box',
-                    outlineColor: '#1455B8',
-                  }}
-                />
-                {fieldErrors.phone_number && (
-                  <span style={{ color: '#DC2626', fontSize: '12px', marginTop: '2px', display: 'block' }}>
-                    {fieldErrors.phone_number}
-                  </span>
-                )}
-              </div>
+                  {fieldErrors.phone_number}
+                </span>
+              )}
             </div>
+          </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              style={{
-                marginTop: '10px',
-                padding: '12px 20px',
-                background: loading
-                  ? '#9CA3AF'
-                  : 'linear-gradient(135deg, #0B2E6F 0%, #1455B8 100%)',
-                color: '#FFFFFF',
-                border: 'none',
-                borderRadius: '8px',
-                fontSize: '14px',
-                fontWeight: 700,
-                cursor: loading ? 'not-allowed' : 'pointer',
-                boxShadow: loading ? 'none' : '0 4px 12px rgba(11, 46, 111, 0.22)',
-                transition: 'all 0.15s ease',
-              }}
-            >
-              {loading ? 'Validating Registration...' : 'Register & Continue to Assessment →'}
-            </button>
-          </form>
+          <button
+            type="submit"
+            disabled={loading}
+            style={{
+              marginTop: '10px',
+              padding: '12px 20px',
+              background: loading
+                ? '#9CA3AF'
+                : 'linear-gradient(135deg, #0B2E6F 0%, #1455B8 100%)',
+              color: '#FFFFFF',
+              border: 'none',
+              borderRadius: '8px',
+              fontSize: '14px',
+              fontWeight: 700,
+              cursor: loading ? 'not-allowed' : 'pointer',
+              boxShadow: loading ? 'none' : '0 4px 12px rgba(11, 46, 111, 0.22)',
+              transition: 'all 0.15s ease',
+            }}
+          >
+            {loading ? 'Validating Registration...' : 'Register & Continue to Assessment →'}
+          </button>
+        </form>
         </div>
       </div>
   );
