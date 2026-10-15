@@ -973,19 +973,35 @@ def save_candidate_answer(attempt_or_id, question_order: int, selected_option: s
 
 
 @transaction.atomic
-def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=AssessmentAttempt.State.SUBMITTED):
+def finalize_assessment_attempt(attempt_or_id, final_state=AssessmentAttempt.State.SUBMITTED, request=None):
     """
     Evaluates MCQs server-side, tallies scores, locks answers, transitions state.
-    Uses select_for_update() to prevent concurrent finalization or duplicate scoring.
+    Uses select_for_update(of=('self',)) to prevent concurrent finalization or duplicate scoring.
+    Accepts either an AssessmentAttempt instance or attempt UUID/ID string.
     """
     service_start = time.perf_counter()
+    attempt_id = attempt_or_id.id if isinstance(attempt_or_id, AssessmentAttempt) else attempt_or_id
+
+    lock_start = time.perf_counter()
     locked_attempt = (
-        AssessmentAttempt.objects.select_for_update()
-        .filter(id=attempt.id)
+        AssessmentAttempt.objects.select_for_update(of=("self",))
+        .select_related("candidate", "assessment", "config")
+        .filter(id=attempt_id)
         .first()
     )
+    lock_ms = (time.perf_counter() - lock_start) * 1000.0
+
     if not locked_attempt:
-        return attempt
+        if request is not None or not isinstance(attempt_or_id, AssessmentAttempt):
+            raise NotFound("Attempt not found.")
+        return attempt_or_id
+
+    if request is not None and not verify_attempt_ownership(request, locked_attempt):
+        raise PermissionDenied("Access forbidden: you do not own this attempt.")
+
+    # If attempt expired and caller did not explicitly request another state, transition to TIMED_OUT
+    if locked_attempt.is_expired() and final_state == AssessmentAttempt.State.SUBMITTED:
+        final_state = AssessmentAttempt.State.TIMED_OUT
 
     # If already finalized, return immediately without re-scoring or altering state
     if locked_attempt.state in [
@@ -995,23 +1011,26 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
     ]:
         service_ms = (time.perf_counter() - service_start) * 1000.0
         logger.info(
-            "ASSESSMENT_FINALIZE_TIMING service_ms=%.1f final_state=%s",
+            "ASSESSMENT_FINALIZE_TIMING lock_ms=%.1f scoring_ms=0.0 write_ms=0.0 service_ms=%.1f final_state=%s",
+            lock_ms,
             service_ms,
             locked_attempt.state,
         )
         return locked_attempt
 
+    scoring_start = time.perf_counter()
     now = timezone.now()
-    snapshots = locked_attempt.question_snapshots.select_related("question").all()
 
-    # Dynamic section marks lookup
+    # Dynamic section marks lookup (single query without redundant .exists() call)
     marks_map = {}
     try:
-        if locked_attempt.assessment and locked_attempt.assessment.section_allocations.exists():
+        if locked_attempt.assessment_id:
             for alloc in locked_attempt.assessment.section_allocations.select_related("section").all():
                 marks_map[alloc.section.code] = alloc.marks_per_question
     except Exception:
         marks_map = {}
+
+    snapshots = list(locked_attempt.question_snapshots.all())
 
     aptitude_score = 0
     coding_score = 0
@@ -1029,6 +1048,9 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
         else:
             s.is_correct = False
 
+    scoring_ms = (time.perf_counter() - scoring_start) * 1000.0
+
+    write_start = time.perf_counter()
     AttemptQuestionSnapshot.objects.bulk_update(snapshots, ["is_correct"])
 
     max_marks = (
@@ -1065,10 +1087,18 @@ def finalize_assessment_attempt(attempt: AssessmentAttempt, final_state=Assessme
         ),
         metadata={"total_score": total_score, "final_state": final_state},
     )
+    write_ms = (time.perf_counter() - write_start) * 1000.0
+
+    # Cache snapshots on attempt instance so serializer accesses do not re-query
+    locked_attempt._prefetched_objects_cache = getattr(locked_attempt, "_prefetched_objects_cache", {})
+    locked_attempt._prefetched_objects_cache["question_snapshots"] = snapshots
 
     service_ms = (time.perf_counter() - service_start) * 1000.0
     logger.info(
-        "ASSESSMENT_FINALIZE_TIMING service_ms=%.1f final_state=%s",
+        "ASSESSMENT_FINALIZE_TIMING lock_ms=%.1f scoring_ms=%.1f write_ms=%.1f service_ms=%.1f final_state=%s",
+        lock_ms,
+        scoring_ms,
+        write_ms,
         service_ms,
         final_state,
     )

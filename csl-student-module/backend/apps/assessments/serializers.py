@@ -342,9 +342,25 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
         return obj.config.total_marks if obj.config else 50
 
     def get_total_questions(self, obj):
+        if hasattr(obj, "_prefetched_objects_cache") and "question_snapshots" in obj._prefetched_objects_cache:
+            return len(obj.question_snapshots.all()) or self.get_max_marks(obj)
         return obj.question_snapshots.count() or self.get_max_marks(obj)
 
     def get_breakdown(self, obj):
+        request = self.context.get("request")
+        is_staff = False
+        if request and hasattr(request, "user"):
+            user = request.user
+            is_auth = getattr(user, "is_authenticated", False)
+            if callable(is_auth):
+                is_auth = is_auth()
+            if is_auth and (getattr(user, "is_staff", False) or getattr(user, "is_superuser", False)):
+                is_staff = True
+
+        # Students never receive breakdown data (popped in to_representation); avoid querying snapshots
+        if not is_staff:
+            return None
+
         snapshots = list(obj.question_snapshots.all())
         total_q = len(snapshots) or self.get_max_marks(obj)
 

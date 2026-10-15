@@ -286,6 +286,9 @@ class ServiceTimingInstrumentationTests(TestCase):
         self.assertEqual(len(timing_logs), 1)
         log_line = timing_logs[0]
 
+        self.assertRegex(log_line, r"lock_ms=\d+\.\d+")
+        self.assertRegex(log_line, r"scoring_ms=\d+\.\d+")
+        self.assertRegex(log_line, r"write_ms=\d+\.\d+")
         self.assertRegex(log_line, r"service_ms=\d+\.\d+")
         self.assertIn("final_state=SUBMITTED", log_line)
 
@@ -295,3 +298,6 @@ class ServiceTimingInstrumentationTests(TestCase):
 
         second_logs = [record for record in captured_again.output if "ASSESSMENT_FINALIZE_TIMING" in record]
         self.assertEqual(len(second_logs), 1)
+        self.assertRegex(second_logs[0], r"lock_ms=\d+\.\d+")
+        self.assertRegex(second_logs[0], r"service_ms=\d+\.\d+")
+        self.assertIn("final_state=SUBMITTED", second_logs[0])

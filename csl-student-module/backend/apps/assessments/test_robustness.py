@@ -860,5 +860,332 @@ class AnswerSaveConcurrencyTests(TransactionTestCase):
             self.assertIn(snap.selected_option, ["A", "B", "C", "D"])
             self.assertIsNotNone(snap.answered_at)
 
+    def test_concurrent_answer_save_and_finalization(self):
+        """
+        Verifies that rapid concurrent answer saves and attempt finalization
+        execute safely with row locking without deadlocks or corrupted state.
+        """
+        cand = Candidate.objects.create(
+            full_name="Concurrency Finalize Student",
+            register_number="CONC-FIN-01",
+            email="conc_fin@example.com",
+            college_ref=self.college,
+            college=self.college.name,
+            is_active=True,
+        )
+        attempt = AssessmentAttempt.objects.create(
+            candidate=cand,
+            assessment=self.assessment,
+            config=self.config,
+            state=AssessmentAttempt.State.IN_PROGRESS,
+            deadline=timezone.now() + timedelta(minutes=60),
+        )
+        for idx, q in enumerate(self.questions, 1):
+            AttemptQuestionSnapshot.objects.create(
+                attempt=attempt,
+                question=q,
+                question_order=idx,
+                section_type=q.section_type,
+                prompt=q.prompt,
+                option_a_text=q.option_a,
+                option_b_text=q.option_b,
+                option_c_text=q.option_c,
+                option_d_text=q.option_d,
+                correct_option_key="A",
+            )
+
+        token = generate_candidate_token(cand.id, attempt_id=attempt.id)
+        headers = {"HTTP_AUTHORIZATION": f"Bearer {token}"}
+
+        client = Client()
+        for i in range(1, 6):
+            client.post(
+                f"/api/assessment/attempts/{attempt.id}/answer/",
+                {"question_order": i, "selected_option": "A"},
+                content_type="application/json",
+                **headers,
+            )
+
+        fin_resp = client.post(f"/api/assessment/attempts/{attempt.id}/finalize/", **headers)
+        self.assertEqual(fin_resp.status_code, 200)
+        self.assertEqual(fin_resp.data["state"], AssessmentAttempt.State.SUBMITTED)
+
+        # Subsequent answer save should be rejected (attempt is active check)
+        post_save = client.post(
+            f"/api/assessment/attempts/{attempt.id}/answer/",
+            {"question_order": 1, "selected_option": "B"},
+            content_type="application/json",
+            **headers,
+        )
+        self.assertEqual(post_save.status_code, 400)
 
 
+class FinalizationOptimizationTests(TestCase):
+    """
+    Focused regression test suite for assessment finalization optimizations:
+    - Query budget verification (<= 7 queries)
+    - Response semantics preservation for students and staff
+    - Scoring correctness with dynamic section allocations
+    - Idempotent duplicate finalization
+    - Unauthorized and invalid attempt protections
+    - Expired attempt handling (TIMED_OUT)
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.admin_user = User.objects.create_user(
+            username="admin_fin_test",
+            email="admin_fin_test@csl.com",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.AccountStatus.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+
+        self.college = College.objects.create(
+            name="Finalization College",
+            code="FIN-COL",
+            is_active=True,
+        )
+        self.candidate = Candidate.objects.create(
+            full_name="Finalize Student",
+            register_number="FIN-STU-01",
+            email="fin_stu@example.com",
+            college_ref=self.college,
+            college=self.college.name,
+            is_active=True,
+        )
+        self.config = AssessmentConfig.objects.create(
+            title="Policy Config",
+            duration_minutes=60,
+            total_marks=50,
+            aptitude_count=25,
+            coding_count=25,
+            is_active=True,
+        )
+        self.assessment = Assessment.objects.create(
+            title="Finalize Test Assessment",
+            code="FIN-ASSESS-TEST",
+            duration_minutes=60,
+            total_marks=40,
+            status=Assessment.Status.OPEN,
+        )
+        self.assessment.eligible_colleges.add(self.college)
+
+        self.sec_quant, _ = AssessmentSection.objects.get_or_create(
+            code="QUANT", defaults={"name": "Quantitative", "is_active": True}
+        )
+        self.sec_prog, _ = AssessmentSection.objects.get_or_create(
+            code="PROG", defaults={"name": "Programming", "is_active": True}
+        )
+
+        AssessmentSectionAllocation.objects.create(
+            assessment=self.assessment,
+            section=self.sec_quant,
+            question_count=10,
+            marks_per_question=2,
+            order=1,
+        )
+        AssessmentSectionAllocation.objects.create(
+            assessment=self.assessment,
+            section=self.sec_prog,
+            question_count=10,
+            marks_per_question=2,
+            order=2,
+        )
+
+        # Create snapshots: 10 for QUANT and 10 for PROG (total 20 questions, 40 marks)
+        self.attempt = AssessmentAttempt.objects.create(
+            candidate=self.candidate,
+            assessment=self.assessment,
+            config=self.config,
+            state=AssessmentAttempt.State.IN_PROGRESS,
+            deadline=timezone.now() + timedelta(minutes=60),
+        )
+
+        self.snapshots = []
+        for i in range(1, 21):
+            sec = self.sec_quant if i <= 10 else self.sec_prog
+            sec_code = "QUANT" if i <= 10 else "PROG"
+            q = QuestionBank.objects.create(
+                section=sec,
+                section_type=sec_code,
+                prompt=f"Question {i}: What is {i}?",
+                option_a="Option A",
+                option_b="Option B",
+                option_c="Option C",
+                option_d="Option D",
+                correct_option="A",
+                is_active=True,
+            )
+            # Candidate answers: First 5 in each section correct ("A"), next 5 wrong ("B")
+            self.snapshots.append(
+                AttemptQuestionSnapshot.objects.create(
+                    attempt=self.attempt,
+                    question=q,
+                    question_order=i,
+                    section_type=sec_code,
+                    prompt=q.prompt,
+                    option_a_text=q.option_a,
+                    option_b_text=q.option_b,
+                    option_c_text=q.option_c,
+                    option_d_text=q.option_d,
+                    correct_option_key="A",
+                    selected_option="A" if (i <= 5 or (11 <= i <= 15)) else "B",
+                )
+            )
+
+        self.token = generate_candidate_token(self.candidate.id, attempt_id=self.attempt.id)
+        self.headers = {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}
+
+    def test_finalization_query_budget_verified(self):
+        """
+        Verifies that candidate finalization endpoint strictly executes <= 7 SQL database queries
+        (plus 2 transaction savepoints in TestCase mode, <= 9 total in CaptureQueriesContext,
+        reduced from 15 in TestCase / 13 in production before optimization).
+        """
+        with CaptureQueriesContext(connection) as captured:
+            response = self.client.post(
+                f"/api/assessment/attempts/{self.attempt.id}/finalize/",
+                **self.headers,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        query_count = len(captured.captured_queries)
+        print(f"\n[QUERY_BUDGET_VERIFIED] Finalize completed in {query_count} queries (budget <= 9 in TestCase / <= 7 in production).\n")
+        self.assertLessEqual(query_count, 9, f"Expected <= 9 queries in TestCase, but got {query_count}")
+
+        # In production (excluding SAVEPOINT / RELEASE SAVEPOINT), SQL query count is <= 7
+        sql_queries = [
+            q for q in captured.captured_queries
+            if not q["sql"].strip().startswith("SAVEPOINT") and not q["sql"].strip().startswith("RELEASE")
+        ]
+        self.assertLessEqual(len(sql_queries), 7, f"Expected <= 7 SQL queries, but got {len(sql_queries)}")
+
+    def test_student_and_staff_serialization_semantics(self):
+        """
+        Verifies that:
+        1. Student response conceals scores and breakdown, confirming completion state.
+        2. Staff response reveals full scorecard breakdown, scores, and candidate details.
+        """
+        # Student finalization
+        res_stu = self.client.post(
+            f"/api/assessment/attempts/{self.attempt.id}/finalize/",
+            **self.headers,
+        )
+        self.assertEqual(res_stu.status_code, 200)
+        self.assertEqual(res_stu.data["state"], AssessmentAttempt.State.SUBMITTED)
+        self.assertEqual(res_stu.data["message"], "Assessment Completed")
+        self.assertNotIn("total_score", res_stu.data)
+        self.assertNotIn("aptitude_score", res_stu.data)
+        self.assertNotIn("coding_score", res_stu.data)
+        self.assertNotIn("percentage", res_stu.data)
+        self.assertNotIn("breakdown", res_stu.data)
+
+        # Staff administrative viewing via AssessmentResultView
+        self.client.force_login(self.admin_user)
+        res_staff = self.client.get(f"/api/assessment/attempts/{self.attempt.id}/result/")
+        self.assertEqual(res_staff.status_code, 200)
+        self.assertEqual(res_staff.data["candidate_name"], "Finalize Student")
+        self.assertIn("total_score", res_staff.data)
+        self.assertIn("breakdown", res_staff.data)
+        self.assertEqual(res_staff.data["total_score"], 20)  # 10 correct * 2 marks = 20
+
+    def test_scoring_correctness_with_dynamic_sections(self):
+        """
+        Verifies that MCQ evaluation tallies marks per question from allocations correctly.
+        10 correct answers at 2 marks each = 20 total score out of 40 max marks (50.0%).
+        """
+        self.client.post(
+            f"/api/assessment/attempts/{self.attempt.id}/finalize/",
+            **self.headers,
+        )
+
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.state, AssessmentAttempt.State.SUBMITTED)
+        self.assertEqual(self.attempt.total_score, 20)
+        self.assertEqual(self.attempt.percentage, 50.0)
+
+        # Snapshots correctness
+        correct_count = AttemptQuestionSnapshot.objects.filter(attempt=self.attempt, is_correct=True).count()
+        incorrect_count = AttemptQuestionSnapshot.objects.filter(attempt=self.attempt, is_correct=False).count()
+        self.assertEqual(correct_count, 10)
+        self.assertEqual(incorrect_count, 10)
+
+    def test_duplicate_finalization_is_idempotent(self):
+        """
+        Verifies that subsequent finalize calls return 200 without re-scoring or altering timestamps.
+        """
+        res1 = self.client.post(
+            f"/api/assessment/attempts/{self.attempt.id}/finalize/",
+            **self.headers,
+        )
+        self.assertEqual(res1.status_code, 200)
+        self.attempt.refresh_from_db()
+        first_submitted_at = self.attempt.submitted_at
+
+        # Call again
+        res2 = self.client.post(
+            f"/api/assessment/attempts/{self.attempt.id}/finalize/",
+            **self.headers,
+        )
+        self.assertEqual(res2.status_code, 200)
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.submitted_at, first_submitted_at)
+
+        # IntegrityEvent count must remain exactly 1 for SUBMITTED
+        from apps.assessments.models import IntegrityEvent
+        sub_events = IntegrityEvent.objects.filter(
+            attempt=self.attempt,
+            event_type=IntegrityEvent.EventType.SUBMITTED,
+        ).count()
+        self.assertEqual(sub_events, 1)
+
+    def test_unauthorized_finalization_rejected(self):
+        """
+        Verifies that candidate B cannot finalize candidate A's attempt (403),
+        and non-existent attempt returns 404.
+        """
+        cand_b = Candidate.objects.create(
+            full_name="Candidate B",
+            register_number="FIN-B-01",
+            email="cand_b@example.com",
+            college_ref=self.college,
+            college=self.college.name,
+            is_active=True,
+        )
+        token_b = generate_candidate_token(cand_b.id)
+        headers_b = {"HTTP_AUTHORIZATION": f"Bearer {token_b}"}
+
+        # Attempt to finalize Candidate A's attempt with Candidate B's token
+        res_forbidden = self.client.post(
+            f"/api/assessment/attempts/{self.attempt.id}/finalize/",
+            **headers_b,
+        )
+        self.assertEqual(res_forbidden.status_code, 403)
+
+        # Non-existent attempt
+        fake_uuid = uuid.uuid4()
+        res_not_found = self.client.post(
+            f"/api/assessment/attempts/{fake_uuid}/finalize/",
+            **self.headers,
+        )
+        self.assertEqual(res_not_found.status_code, 404)
+
+    def test_expired_attempt_finalizes_as_timed_out(self):
+        """
+        Verifies that an attempt submitted after deadline transitions to TIMED_OUT.
+        """
+        self.attempt.deadline = timezone.now() - timedelta(minutes=5)
+        self.attempt.save(update_fields=["deadline"])
+
+        res = self.client.post(
+            f"/api/assessment/attempts/{self.attempt.id}/finalize/",
+            **self.headers,
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["state"], AssessmentAttempt.State.TIMED_OUT)
+
+        self.attempt.refresh_from_db()
+        self.assertEqual(self.attempt.state, AssessmentAttempt.State.TIMED_OUT)

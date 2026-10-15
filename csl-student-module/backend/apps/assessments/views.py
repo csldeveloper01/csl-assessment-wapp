@@ -815,15 +815,7 @@ class FinalizeAssessmentView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request, attempt_id):
-        attempt = get_object_or_404(AssessmentAttempt, id=attempt_id)
-        if not verify_attempt_ownership(request, attempt):
-            return Response({"detail": "Access forbidden: you do not own this attempt."}, status=status.HTTP_403_FORBIDDEN)
-
-        final_state = AssessmentAttempt.State.SUBMITTED
-        if attempt.is_expired():
-            final_state = AssessmentAttempt.State.TIMED_OUT
-
-        finalized_attempt = finalize_assessment_attempt(attempt, final_state=final_state)
+        finalized_attempt = finalize_assessment_attempt(attempt_id, request=request)
         serializer = AssessmentResultSerializer(finalized_attempt, context={"request": request})
         return Response(serializer.data, status=status.HTTP_200_OK)
 
