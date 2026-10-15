@@ -101,50 +101,50 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
             needed = alloc.question_count
             if needed <= 0:
                 continue
+            sec_q_filter = (
+                models.Q(section=sec)
+                | models.Q(section_type__iexact=sec.code)
+                | models.Q(section__code__iexact=sec.code)
+            )
             if assessment.questions.exists():
-                available = assessment.questions.filter(
-                    models.Q(section=sec) | models.Q(section_type__iexact=sec.code) | models.Q(section__code__iexact=sec.code),
-                    is_active=True,
-                ).count()
+                available = assessment.questions.filter(sec_q_filter, is_active=True).distinct().count()
             else:
-                available = QuestionBank.objects.filter(
-                    models.Q(section=sec) | models.Q(section_type__iexact=sec.code) | models.Q(section__code__iexact=sec.code),
-                    is_active=True,
-                ).count()
+                available = QuestionBank.objects.filter(sec_q_filter, is_active=True).distinct().count()
+
             if available < needed:
+                shortage = needed - available
                 errors.append(
-                    f"Insufficient '{sec.name}' ({sec.code}) questions in {scope_name}: found {available}, requires {needed}."
+                    f"Insufficient '{sec.name}' ({sec.code}) questions in {scope_name}: found {available}, requires {needed} (shortage of {shortage})."
                 )
     else:
         apt_count = aptitude_count if aptitude_count is not None else (assessment.aptitude_count if assessment else 25)
         cod_count = coding_count if coding_count is not None else (assessment.coding_count if assessment else 25)
 
+        apt_filter = (
+            models.Q(section_type__iexact=QuestionBank.SectionType.APTITUDE)
+            | models.Q(section__code__iexact="APTITUDE")
+        )
+        cod_filter = (
+            models.Q(section_type__iexact=QuestionBank.SectionType.CODING)
+            | models.Q(section__code__iexact="CODING")
+        )
+
         if assessment and assessment.questions.exists():
-            active_aptitude = assessment.questions.filter(
-                models.Q(section_type__iexact=QuestionBank.SectionType.APTITUDE) | models.Q(section__code__iexact="APTITUDE"),
-                is_active=True,
-            ).count()
-            active_coding = assessment.questions.filter(
-                models.Q(section_type__iexact=QuestionBank.SectionType.CODING) | models.Q(section__code__iexact="CODING"),
-                is_active=True,
-            ).count()
+            active_aptitude = assessment.questions.filter(apt_filter, is_active=True).distinct().count()
+            active_coding = assessment.questions.filter(cod_filter, is_active=True).distinct().count()
         else:
-            active_aptitude = QuestionBank.objects.filter(
-                models.Q(section_type__iexact=QuestionBank.SectionType.APTITUDE) | models.Q(section__code__iexact="APTITUDE"),
-                is_active=True,
-            ).count()
-            active_coding = QuestionBank.objects.filter(
-                models.Q(section_type__iexact=QuestionBank.SectionType.CODING) | models.Q(section__code__iexact="CODING"),
-                is_active=True,
-            ).count()
+            active_aptitude = QuestionBank.objects.filter(apt_filter, is_active=True).distinct().count()
+            active_coding = QuestionBank.objects.filter(cod_filter, is_active=True).distinct().count()
 
         if active_aptitude < apt_count:
+            shortage = apt_count - active_aptitude
             errors.append(
-                f"Insufficient aptitude questions in {scope_name}: found {active_aptitude}, requires {apt_count}."
+                f"Insufficient aptitude questions in {scope_name}: found {active_aptitude}, requires {apt_count} (shortage of {shortage})."
             )
         if active_coding < cod_count:
+            shortage = cod_count - active_coding
             errors.append(
-                f"Insufficient coding questions in {scope_name}: found {active_coding}, requires {cod_count}."
+                f"Insufficient coding questions in {scope_name}: found {active_coding}, requires {cod_count} (shortage of {shortage})."
             )
 
     if errors:
@@ -152,38 +152,79 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
     return True
 
 
-def select_balanced_questions(section_type: str, required_count: int, assessment: Assessment = None):
+def select_balanced_questions(
+    section_type,
+    required_count: int,
+    assessment: Assessment = None,
+    section_obj=None,
+    exclude_question_ids: set = None,
+):
     """
-    Selects questions distributed evenly across available categories and difficulty levels.
-    1. Scopes strictly to assessment pool if questions are assigned to that assessment.
-    2. Groups active questions by (category, difficulty).
-    3. Uses round-robin stratified sampling across available groups.
-    4. Fills any remaining slots from the remaining pool uniformly.
+    Selects exactly required_count questions distributed evenly across available difficulty levels.
+    - Scopes strictly to assessment pool if questions are assigned to that assessment.
+    - Fully supports dynamic AssessmentSection instances or section codes.
+    - Excludes previously selected question IDs to guarantee global uniqueness.
+    - Uses round-robin stratified sampling across available difficulty groups.
+    - The presence of additional questions in the pool never causes failure.
     """
-    if assessment and assessment.questions.exists():
-        qs = list(
-            assessment.questions.filter(
-                models.Q(section_type__iexact=section_type) | models.Q(section__code__iexact=section_type),
-                is_active=True,
-            )
+    if required_count <= 0:
+        return []
+
+    # Resolve section object or code
+    sec = section_obj
+    sec_code = None
+    sec_name = None
+
+    if sec is not None:
+        sec_code = getattr(sec, "code", str(sec))
+        sec_name = getattr(sec, "name", sec_code)
+    elif hasattr(section_type, "code"):
+        sec = section_type
+        sec_code = sec.code
+        sec_name = getattr(sec, "name", sec_code)
+    else:
+        sec_code = str(section_type)
+        sec_name = sec_code
+
+    if sec is not None:
+        q_filter = (
+            models.Q(section=sec)
+            | models.Q(section_type__iexact=sec_code)
+            | models.Q(section__code__iexact=sec_code)
         )
     else:
-        qs = list(
-            QuestionBank.objects.filter(
-                models.Q(section_type__iexact=section_type) | models.Q(section__code__iexact=section_type),
-                is_active=True,
-            )
+        q_filter = (
+            models.Q(section_type__iexact=sec_code)
+            | models.Q(section__code__iexact=sec_code)
+            | models.Q(section__name__iexact=sec_code)
         )
+
+    base_qs = assessment.questions if (assessment and assessment.questions.exists()) else QuestionBank.objects
+    query = base_qs.filter(q_filter, is_active=True)
+    if exclude_question_ids:
+        query = query.exclude(id__in=exclude_question_ids)
+
+    # Distinct query and unique dictionary map
+    raw_qs = list(query.distinct())
+    unique_map = {q.id: q for q in raw_qs}
+    qs = list(unique_map.values())
 
     if len(qs) < required_count:
         scope = f"in pool for '{assessment.title}'" if assessment else "in bank"
+        shortage = required_count - len(qs)
         raise ValidationError(
-            {"bank_error": f"Insufficient {section_type} questions {scope}: {len(qs)} available, {required_count} needed."}
+            {
+                "bank_error": (
+                    f"Insufficient '{sec_name}' ({sec_code}) questions {scope}: "
+                    f"found {len(qs)}, requires {required_count} (shortage of {shortage})."
+                )
+            }
         )
 
+    # Stratified sampling across difficulty buckets
     buckets = defaultdict(list)
     for q in qs:
-        buckets[(q.difficulty,)].append(q)
+        buckets[q.difficulty].append(q)
 
     for key in buckets:
         random.shuffle(buckets[key])
@@ -210,7 +251,7 @@ def select_balanced_questions(section_type: str, required_count: int, assessment
         selected.extend(leftover[: required_count - len(selected)])
 
     random.shuffle(selected)
-    return selected
+    return selected[:required_count]
 
 
 # ==============================================================================
@@ -679,6 +720,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
 
     # Dynamic or legacy question selection
     all_selected = []
+    selected_question_ids = set()
     has_allocations = False
     try:
         if assessment and assessment.section_allocations.exists():
@@ -687,26 +729,53 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         has_allocations = False
 
     if has_allocations:
-        allocations = assessment.section_allocations.select_related("section").order_by("order", "id")
+        allocations = list(assessment.section_allocations.select_related("section").order_by("order", "id"))
+        total_required = sum(alloc.question_count for alloc in allocations)
         order_counter = 1
         for alloc in allocations:
             sec_questions = select_balanced_questions(
                 alloc.section.code,
                 alloc.question_count,
                 assessment=assessment,
+                section_obj=alloc.section,
+                exclude_question_ids=selected_question_ids,
             )
             for q in sec_questions:
                 all_selected.append((q, order_counter, alloc.section.code))
+                selected_question_ids.add(q.id)
                 order_counter += 1
     else:
         apt_count = assessment.aptitude_count if assessment else config.aptitude_count
         cod_count = assessment.coding_count if assessment else config.coding_count
-        selected_aptitude = select_balanced_questions(QuestionBank.SectionType.APTITUDE, apt_count, assessment=assessment)
-        selected_coding = select_balanced_questions(QuestionBank.SectionType.CODING, cod_count, assessment=assessment)
+        total_required = apt_count + cod_count
+
+        selected_aptitude = select_balanced_questions(
+            QuestionBank.SectionType.APTITUDE,
+            apt_count,
+            assessment=assessment,
+            exclude_question_ids=selected_question_ids,
+        )
+        for q in selected_aptitude:
+            selected_question_ids.add(q.id)
+
+        selected_coding = select_balanced_questions(
+            QuestionBank.SectionType.CODING,
+            cod_count,
+            assessment=assessment,
+            exclude_question_ids=selected_question_ids,
+        )
+        for q in selected_coding:
+            selected_question_ids.add(q.id)
+
         for i, q in enumerate(selected_aptitude):
             all_selected.append((q, i + 1, QuestionBank.SectionType.APTITUDE))
         for i, q in enumerate(selected_coding):
             all_selected.append((q, i + apt_count + 1, QuestionBank.SectionType.CODING))
+
+    if len(all_selected) != total_required:
+        raise ValidationError(
+            {"detail": f"Failed to generate assessment: expected {total_required} questions, selected {len(all_selected)}."}
+        )
 
     now = timezone.now()
     duration = assessment.duration_minutes if assessment else config.duration_minutes
@@ -722,9 +791,15 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         deadline=deadline,
     )
 
-    # Create Snapshots with option shuffling
+    # Create Snapshots with option shuffling and strict question uniqueness
     snapshots = []
+    seen_q_ids = set()
+    snapshot_order = 1
     for q, order, sec_code in all_selected:
+        if q.id in seen_q_ids:
+            continue
+        seen_q_ids.add(q.id)
+
         orig_options = [
             ("A", q.option_a),
             ("B", q.option_b),
@@ -744,7 +819,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             AttemptQuestionSnapshot(
                 attempt=attempt,
                 question=q,
-                question_order=order,
+                question_order=snapshot_order,
                 section_type=sec_code,
                 prompt=q.prompt,
                 option_a_text=shuffled[0][1],
@@ -754,6 +829,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
                 correct_option_key=correct_key_in_shuffled,
             )
         )
+        snapshot_order += 1
 
     AttemptQuestionSnapshot.objects.bulk_create(snapshots)
 

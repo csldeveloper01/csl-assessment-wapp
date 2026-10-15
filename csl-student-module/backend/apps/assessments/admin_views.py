@@ -554,14 +554,29 @@ class AdminAssessmentAssignQuestionsView(APIView):
         else:  # add
             assign_questions_to_assessment(assessment, question_ids, user=request.user)
 
-        apt_count = assessment.questions.filter(section_type=QuestionBank.SectionType.APTITUDE, is_active=True).count()
-        cod_count = assessment.questions.filter(section_type=QuestionBank.SectionType.CODING, is_active=True).count()
+        apt_count = assessment.questions.filter(section_type=QuestionBank.SectionType.APTITUDE, is_active=True).distinct().count()
+        cod_count = assessment.questions.filter(section_type=QuestionBank.SectionType.CODING, is_active=True).distinct().count()
+
+        is_sufficient = True
+        if assessment.section_allocations.exists():
+            for alloc in assessment.section_allocations.select_related("section").all():
+                sec = alloc.section
+                sec_count = assessment.questions.filter(
+                    Q(section=sec) | Q(section_type__iexact=sec.code) | Q(section__code__iexact=sec.code),
+                    is_active=True,
+                ).distinct().count()
+                if sec_count < alloc.question_count:
+                    is_sufficient = False
+                    break
+        else:
+            is_sufficient = (apt_count >= assessment.aptitude_count and cod_count >= assessment.coding_count)
+
         return Response({
             "message": f"Updated question pool for '{assessment.title}'.",
             "total_questions": assessment.questions.count(),
             "aptitude_count": apt_count,
             "coding_count": cod_count,
-            "is_sufficient": (apt_count >= assessment.aptitude_count and cod_count >= assessment.coding_count),
+            "is_sufficient": is_sufficient,
         })
 
 

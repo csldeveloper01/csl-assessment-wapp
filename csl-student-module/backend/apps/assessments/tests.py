@@ -16,6 +16,7 @@ from apps.assessments.models import (
     IntegrityEvent,
     AssessmentAuditLog,
     AssessmentSection,
+    AssessmentSectionAllocation,
 )
 from apps.assessments.services import (
     start_assessment_for_candidate,
@@ -1900,4 +1901,468 @@ class AssessmentOpenRegressionTests(TestCase):
         )
         self.assertEqual(submit_res.status_code, 200)
         self.assertEqual(submit_res.data["state"], "SUBMITTED")
+
+
+class AssessmentGenerationAndPoolThresholdTests(TestCase):
+    """
+    Comprehensive tests for assessment generation and question pool threshold logic:
+    - Settings are the source of truth for required question counts
+    - Pool with exact, extra, or substantially more questions
+    - Custom sections with independent counts
+    - Error reporting for insufficient questions with exact section and shortage
+    - Difficulty distribution preservation
+    - Guarantee of unique questions with no IntegrityError
+    - Randomized subsets on repeated attempts
+    """
+    def setUp(self):
+        from apps.users.models import User
+        self.admin = User.objects.create_user(
+            username="pool_test_admin",
+            email="pool_admin@csl.com",
+            password="AdminPassword123!",
+            role=User.Role.ADMIN,
+            status=User.AccountStatus.ACTIVE,
+            is_staff=True,
+            is_superuser=True,
+        )
+        self.college = College.objects.create(
+            name="Apex Institute of Technology",
+            code="AIT-TEST",
+            contact_email="ait@example.com",
+            is_active=True,
+        )
+
+    def _create_candidate(self, email_prefix="cand"):
+        unique_suffix = uuid.uuid4().hex[:6]
+        return Candidate.objects.create(
+            full_name=f"Student {unique_suffix}",
+            register_number=f"REG-{unique_suffix}",
+            email=f"{email_prefix}_{unique_suffix}@example.com",
+            college_ref=self.college,
+            college=self.college.name,
+            is_active=True,
+        )
+
+    def _create_questions(self, count, section_code, section_obj=None, difficulty=None):
+        questions = []
+        diffs = [QuestionBank.Difficulty.EASY, QuestionBank.Difficulty.MEDIUM, QuestionBank.Difficulty.HARD]
+        for i in range(count):
+            diff = difficulty if difficulty else diffs[i % 3]
+            q = QuestionBank.objects.create(
+                prompt=f"Question {i+1} for section {section_code} diff {diff}",
+                section=section_obj,
+                section_type=section_code,
+                difficulty=diff,
+                option_a=f"Option A for {i}",
+                option_b=f"Option B for {i}",
+                option_c=f"Option C for {i}",
+                option_d=f"Option D for {i}",
+                correct_option="A",
+                is_active=True,
+            )
+            questions.append(q)
+        return questions
+
+    def test_exact_pool_count_generates_successfully(self):
+        """Required: 30, available: 30 -> generates 30 successfully."""
+        assessment = Assessment.objects.create(
+            code="EXACT-30",
+            title="Exact 30 Pool Assessment",
+            duration_minutes=60,
+            total_marks=30,
+            aptitude_count=15,
+            coding_count=15,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        apt_qs = self._create_questions(15, QuestionBank.SectionType.APTITUDE)
+        cod_qs = self._create_questions(15, QuestionBank.SectionType.CODING)
+        assessment.questions.add(*(apt_qs + cod_qs))
+        self.assertEqual(assessment.questions.count(), 30)
+
+        cand = self._create_candidate("exact")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["questions"]), 30)
+        self.assertEqual(res.data["total_questions"], 30)
+
+    def test_pool_with_more_questions_generates_exact_required_count(self):
+        """Required: 30, available: 50 -> randomly selects exactly 30."""
+        assessment = Assessment.objects.create(
+            code="POOL-50-REQ-30",
+            title="50 Pool Assessment",
+            duration_minutes=60,
+            total_marks=30,
+            aptitude_count=15,
+            coding_count=15,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        apt_qs = self._create_questions(25, QuestionBank.SectionType.APTITUDE)
+        cod_qs = self._create_questions(25, QuestionBank.SectionType.CODING)
+        assessment.questions.add(*(apt_qs + cod_qs))
+        self.assertEqual(assessment.questions.count(), 50)
+
+        cand = self._create_candidate("pool50")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["questions"]), 30)
+        # Verify 15 Aptitude and 15 Coding
+        apt_count = sum(1 for q in res.data["questions"] if q["section_type"] == QuestionBank.SectionType.APTITUDE)
+        cod_count = sum(1 for q in res.data["questions"] if q["section_type"] == QuestionBank.SectionType.CODING)
+        self.assertEqual(apt_count, 15)
+        self.assertEqual(cod_count, 15)
+
+    def test_substantially_larger_pool_generates_exact_required_count(self):
+        """Required: 30, available: 100+ -> randomly selects exactly 30."""
+        assessment = Assessment.objects.create(
+            code="POOL-100-REQ-30",
+            title="100+ Pool Assessment",
+            duration_minutes=60,
+            total_marks=30,
+            aptitude_count=15,
+            coding_count=15,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        apt_qs = self._create_questions(60, QuestionBank.SectionType.APTITUDE)
+        cod_qs = self._create_questions(50, QuestionBank.SectionType.CODING)
+        assessment.questions.add(*(apt_qs + cod_qs))
+        self.assertEqual(assessment.questions.count(), 110)
+
+        cand = self._create_candidate("pool100")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(len(res.data["questions"]), 30)
+
+    def test_insufficient_total_questions_returns_clear_error(self):
+        """Required: 30 (15 Apt + 15 Cod), available: 20 Apt + 10 Cod -> reports shortage."""
+        assessment = Assessment.objects.create(
+            code="SHORTAGE-30",
+            title="Shortage Assessment",
+            duration_minutes=60,
+            total_marks=30,
+            aptitude_count=15,
+            coding_count=15,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        apt_qs = self._create_questions(20, QuestionBank.SectionType.APTITUDE)
+        cod_qs = self._create_questions(10, QuestionBank.SectionType.CODING)
+        assessment.questions.add(*(apt_qs + cod_qs))
+
+        cand = self._create_candidate("shortage")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 400)
+        error_text = str(res.data)
+        self.assertIn("Insufficient coding questions", error_text)
+        self.assertIn("found 10, requires 15", error_text)
+
+    def test_multiple_custom_sections_independent_question_counts(self):
+        """
+        Custom Sections A (10), B (10), C (10) with pools 40, 25, 50.
+        Selects exactly 10 from each, generating a 30-question assessment.
+        """
+        sec_a = AssessmentSection.objects.create(name="Section Alpha", code="SEC_A", order=1)
+        sec_b = AssessmentSection.objects.create(name="Section Beta", code="SEC_B", order=2)
+        sec_c = AssessmentSection.objects.create(name="Section Gamma", code="SEC_C", order=3)
+
+        assessment = Assessment.objects.create(
+            code="CUSTOM-ABC-30",
+            title="Custom Sections Assessment",
+            duration_minutes=60,
+            total_marks=30,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_a, question_count=10, marks_per_question=1, order=1)
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_b, question_count=10, marks_per_question=1, order=2)
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_c, question_count=10, marks_per_question=1, order=3)
+
+        qs_a = self._create_questions(40, sec_a.code, section_obj=sec_a)
+        qs_b = self._create_questions(25, sec_b.code, section_obj=sec_b)
+        qs_c = self._create_questions(50, sec_c.code, section_obj=sec_c)
+        assessment.questions.add(*(qs_a + qs_b + qs_c))
+
+        cand = self._create_candidate("custom_abc")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 200)
+        questions = res.data["questions"]
+        self.assertEqual(len(questions), 30)
+
+        a_count = sum(1 for q in questions if q["section_type"] == "SEC_A")
+        b_count = sum(1 for q in questions if q["section_type"] == "SEC_B")
+        c_count = sum(1 for q in questions if q["section_type"] == "SEC_C")
+        self.assertEqual(a_count, 10)
+        self.assertEqual(b_count, 10)
+        self.assertEqual(c_count, 10)
+
+    def test_one_custom_section_insufficient_identifies_exact_section(self):
+        """Custom sections A (10), B (10), C (10) where B only has 7 questions."""
+        sec_a = AssessmentSection.objects.create(name="Section Alpha 2", code="SEC_A2", order=1)
+        sec_b = AssessmentSection.objects.create(name="Section Beta 2", code="SEC_B2", order=2)
+        sec_c = AssessmentSection.objects.create(name="Section Gamma 2", code="SEC_C2", order=3)
+
+        assessment = Assessment.objects.create(
+            code="CUSTOM-SHORT-B",
+            title="Short Section B Assessment",
+            duration_minutes=60,
+            total_marks=30,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_a, question_count=10, marks_per_question=1, order=1)
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_b, question_count=10, marks_per_question=1, order=2)
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_c, question_count=10, marks_per_question=1, order=3)
+
+        qs_a = self._create_questions(40, sec_a.code, section_obj=sec_a)
+        qs_b = self._create_questions(7, sec_b.code, section_obj=sec_b)
+        qs_c = self._create_questions(50, sec_c.code, section_obj=sec_c)
+        assessment.questions.add(*(qs_a + qs_b + qs_c))
+
+        cand = self._create_candidate("short_b")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 400)
+        error_text = str(res.data)
+        self.assertIn("Section Beta 2", error_text)
+        self.assertIn("SEC_B2", error_text)
+        self.assertIn("found 7, requires 10", error_text)
+
+    def test_difficulty_distribution_preserved_during_random_selection(self):
+        """Verify stratified sampling preserves difficulty distribution when selecting from pool."""
+        sec = AssessmentSection.objects.create(name="Balanced Section", code="BAL_SEC")
+        assessment = Assessment.objects.create(
+            code="BALANCED-DIFF",
+            title="Balanced Difficulty Assessment",
+            duration_minutes=60,
+            total_marks=15,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec, question_count=15, marks_per_question=1)
+
+        # Create 20 Easy, 20 Medium, 20 Hard
+        easy_qs = self._create_questions(20, sec.code, section_obj=sec, difficulty=QuestionBank.Difficulty.EASY)
+        med_qs = self._create_questions(20, sec.code, section_obj=sec, difficulty=QuestionBank.Difficulty.MEDIUM)
+        hard_qs = self._create_questions(20, sec.code, section_obj=sec, difficulty=QuestionBank.Difficulty.HARD)
+        assessment.questions.add(*(easy_qs + med_qs + hard_qs))
+
+        cand = self._create_candidate("balanced")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 200)
+        attempt_id = res.data["id"]
+
+        attempt = AssessmentAttempt.objects.get(id=attempt_id)
+        selected_questions = [s.question for s in attempt.question_snapshots.all()]
+        self.assertEqual(len(selected_questions), 15)
+
+        easy_sel = sum(1 for q in selected_questions if q.difficulty == QuestionBank.Difficulty.EASY)
+        med_sel = sum(1 for q in selected_questions if q.difficulty == QuestionBank.Difficulty.MEDIUM)
+        hard_sel = sum(1 for q in selected_questions if q.difficulty == QuestionBank.Difficulty.HARD)
+
+        # In stratified sampling of 15 questions from 3 equal buckets, each difficulty gets 5
+        self.assertEqual(easy_sel, 5)
+        self.assertEqual(med_sel, 5)
+        self.assertEqual(hard_sel, 5)
+
+    def test_no_duplicate_question_ids_across_snapshots(self):
+        """Ensure all generated snapshots for an attempt have strictly unique question foreign keys."""
+        sec_a = AssessmentSection.objects.create(name="Overlap Section A", code="OVL_A")
+        sec_b = AssessmentSection.objects.create(name="Overlap Section B", code="OVL_B")
+
+        assessment = Assessment.objects.create(
+            code="UNIQUE-Q-TEST",
+            title="Unique Question Test Assessment",
+            duration_minutes=60,
+            total_marks=20,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_a, question_count=10, marks_per_question=1, order=1)
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_b, question_count=10, marks_per_question=1, order=2)
+
+        qs_a = self._create_questions(25, sec_a.code, section_obj=sec_a)
+        qs_b = self._create_questions(25, sec_b.code, section_obj=sec_b)
+        assessment.questions.add(*(qs_a + qs_b))
+
+        cand = self._create_candidate("unique_q")
+        token = generate_candidate_token(str(cand.id))
+
+        client = Client()
+        res = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 200)
+        attempt_id = res.data["id"]
+
+        attempt = AssessmentAttempt.objects.get(id=attempt_id)
+        snapshots = list(attempt.question_snapshots.all())
+        self.assertEqual(len(snapshots), 20)
+
+        # Check unique question IDs
+        question_ids = [s.question_id for s in snapshots]
+        self.assertEqual(len(question_ids), len(set(question_ids)))
+
+        # Check unique question orders
+        orders = [s.question_order for s in snapshots]
+        self.assertEqual(orders, list(range(1, 21)))
+
+    def test_repeated_attempts_generate_valid_randomized_subsets(self):
+        """Different candidate attempts receive valid randomized subsets of the question pool."""
+        assessment = Assessment.objects.create(
+            code="RANDOM-SUBSET",
+            title="Randomized Subsets Assessment",
+            duration_minutes=60,
+            total_marks=10,
+            aptitude_count=5,
+            coding_count=5,
+            max_attempts=2,
+            status=Assessment.Status.OPEN,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        apt_qs = self._create_questions(30, QuestionBank.SectionType.APTITUDE)
+        cod_qs = self._create_questions(30, QuestionBank.SectionType.CODING)
+        assessment.questions.add(*(apt_qs + cod_qs))
+
+        c1 = self._create_candidate("c1")
+        c2 = self._create_candidate("c2")
+
+        client = Client()
+
+        t1 = generate_candidate_token(str(c1.id))
+        res1 = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {t1}",
+        )
+        self.assertEqual(res1.status_code, 200)
+
+        t2 = generate_candidate_token(str(c2.id))
+        res2 = client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {t2}",
+        )
+        self.assertEqual(res2.status_code, 200)
+
+        att1 = AssessmentAttempt.objects.get(id=res1.data["id"])
+        att2 = AssessmentAttempt.objects.get(id=res2.data["id"])
+
+        q_ids1 = set(att1.question_snapshots.values_list("question_id", flat=True))
+        q_ids2 = set(att2.question_snapshots.values_list("question_id", flat=True))
+
+        self.assertEqual(len(q_ids1), 10)
+        self.assertEqual(len(q_ids2), 10)
+        # Verify that both subsets are drawn from the pool of 60 questions
+        all_pool_ids = set(assessment.questions.values_list("id", flat=True))
+        self.assertTrue(q_ids1.issubset(all_pool_ids))
+        self.assertTrue(q_ids2.issubset(all_pool_ids))
+
+    def test_admin_assign_questions_is_sufficient_dynamic_sections(self):
+        """AdminAssignQuestionsView accurately reports sufficiency for custom section allocations."""
+        sec_a = AssessmentSection.objects.create(name="Section A Suff", code="SAS_A")
+        sec_b = AssessmentSection.objects.create(name="Section B Suff", code="SAS_B")
+
+        assessment = Assessment.objects.create(
+            code="ADMIN-SUFF-TEST",
+            title="Admin Sufficiency Test",
+            total_marks=20,
+            status=Assessment.Status.DRAFT,
+        )
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_a, question_count=10, marks_per_question=1, order=1)
+        AssessmentSectionAllocation.objects.create(assessment=assessment, section=sec_b, question_count=10, marks_per_question=1, order=2)
+
+        qs_a = self._create_questions(15, sec_a.code, section_obj=sec_a)
+        qs_b = self._create_questions(5, sec_b.code, section_obj=sec_b)  # short by 5
+
+        client = Client()
+        client.force_login(self.admin)
+
+        # Assign qs_a + qs_b (sec_b has only 5, requires 10) -> is_sufficient should be False
+        res1 = client.post(
+            f"/api/csl-admin/assessments/{assessment.id}/assign-questions/",
+            {"question_ids": [q.id for q in (qs_a + qs_b)], "action": "set"},
+            content_type="application/json",
+        )
+        self.assertEqual(res1.status_code, 200)
+        self.assertFalse(res1.data["is_sufficient"])
+
+        # Now add 10 more questions to sec_b -> is_sufficient should be True
+        more_b = self._create_questions(10, sec_b.code, section_obj=sec_b)
+        res2 = client.post(
+            f"/api/csl-admin/assessments/{assessment.id}/assign-questions/",
+            {"question_ids": [q.id for q in more_b], "action": "add"},
+            content_type="application/json",
+        )
+        self.assertEqual(res2.status_code, 200)
+        self.assertTrue(res2.data["is_sufficient"])
 

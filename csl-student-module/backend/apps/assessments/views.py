@@ -4,6 +4,7 @@ from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAdminUser
 from rest_framework.authentication import SessionAuthentication, BasicAuthentication
+from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.utils import timezone
@@ -400,18 +401,28 @@ class StartAssessmentView(APIView):
 
         try:
             attempt = start_assessment_for_candidate(candidate, assessment=assessment, config=config)
-        except Exception as e:
+            token = generate_candidate_token(str(candidate.id), str(attempt.id))
+
+            serializer = AssessmentAttemptDetailSerializer(attempt)
+            res_data = dict(serializer.data)
+            res_data["assessment_token"] = token
+            return Response(res_data, status=status.HTTP_200_OK)
+        except ValidationError as e:
             detail_msg = getattr(e, "detail", str(e))
             if isinstance(detail_msg, dict):
                 return Response(detail_msg, status=status.HTTP_400_BAD_REQUEST)
             return Response({"detail": str(detail_msg)}, status=status.HTTP_400_BAD_REQUEST)
-
-        token = generate_candidate_token(str(candidate.id), str(attempt.id))
-
-        serializer = AssessmentAttemptDetailSerializer(attempt)
-        res_data = dict(serializer.data)
-        res_data["assessment_token"] = token
-        return Response(res_data, status=status.HTTP_200_OK)
+        except Exception as e:
+            logger.exception(f"Unexpected assessment generation failure for candidate {candidate.id}: {e}")
+            detail_msg = getattr(e, "detail", None)
+            if detail_msg:
+                if isinstance(detail_msg, dict):
+                    return Response(detail_msg, status=status.HTTP_400_BAD_REQUEST)
+                return Response({"detail": str(detail_msg)}, status=status.HTTP_400_BAD_REQUEST)
+            return Response(
+                {"detail": "Assessment generation could not be completed. Please contact your administrator."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
 
 class AttemptStateView(APIView):
