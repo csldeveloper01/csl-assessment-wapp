@@ -9,6 +9,7 @@ from rest_framework.authentication import SessionAuthentication, BasicAuthentica
 from rest_framework.exceptions import ValidationError
 from django.shortcuts import get_object_or_404
 from django.db import transaction
+from django.db.models import Exists, OuterRef
 from django.utils import timezone
 
 from .models import (
@@ -361,6 +362,7 @@ class StartAssessmentView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
+        view_started = time.perf_counter()
         candidate = get_authorized_candidate(request)
         if not candidate:
             return Response(
@@ -371,10 +373,19 @@ class StartAssessmentView(APIView):
         assessment_id = request.data.get("assessment_id")
         assessment = None
         if assessment_id:
-            assessment = Assessment.objects.prefetch_related(
-                "eligible_colleges",
-                "section_allocations__section",
-            ).filter(id=assessment_id).first()
+            assessment = (
+                Assessment.objects.annotate(
+                    has_pool_questions=Exists(
+                        Assessment.questions.through.objects.filter(assessment_id=OuterRef("pk"))
+                    )
+                )
+                .prefetch_related(
+                    "eligible_colleges",
+                    "section_allocations__section",
+                )
+                .filter(id=assessment_id)
+                .first()
+            )
             if not assessment:
                 return Response(
                     {"detail": f"Assessment '{assessment_id}' not found."},
@@ -382,36 +393,44 @@ class StartAssessmentView(APIView):
                 )
 
         config = get_or_create_default_config()
-        request_started = time.perf_counter()
+        lookup_ms = (time.perf_counter() - view_started) * 1000.0
 
         try:
-
             service_started = time.perf_counter()
             attempt = start_assessment_for_candidate(candidate, assessment=assessment, config=config)
-            service_ms = (time.perf_counter() - service_started) * 1000
-            logger.info(
-                "ASSESSMENT_START_TIMING service_ms=%.1f candidate_id=%s assessment_id=%s",
-                service_ms, candidate.id, assessment.id if assessment else None,
-            )
+            service_ms = (time.perf_counter() - service_started) * 1000.0
 
             token = generate_candidate_token(str(candidate.id), str(attempt.id))
 
+            prep_started = time.perf_counter()
+            if not (
+                hasattr(attempt, "_prefetched_objects_cache")
+                and "question_snapshots" in attempt._prefetched_objects_cache
+            ):
+                attempt = (
+                    AssessmentAttempt.objects.select_related("candidate", "assessment", "config")
+                    .prefetch_related(
+                        "question_snapshots__question",
+                        "assessment__section_allocations__section",
+                    )
+                    .get(pk=attempt.pk)
+                )
+            prep_ms = (time.perf_counter() - prep_started) * 1000.0
 
             serializer_started = time.perf_counter()
-            attempt = AssessmentAttempt.objects.select_related(
-                "candidate", "assessment", "config"
-            ).prefetch_related(
-                "question_snapshots__question",
-                "assessment__section_allocations__section",
-            ).get(pk=attempt.pk)
-
             serializer = AssessmentAttemptDetailSerializer(attempt)
             res_data = dict(serializer.data)
-            serializer_ms = (time.perf_counter() - serializer_started) * 1000
-            total_ms = (time.perf_counter() - request_started) * 1000
+            serializer_ms = (time.perf_counter() - serializer_started) * 1000.0
+            total_ms = (time.perf_counter() - view_started) * 1000.0
+
             logger.info(
-                "ASSESSMENT_START_TIMING serializer_ms=%.1f total_ms=%.1f attempt_id=%s",
-                serializer_ms, total_ms, attempt.id,
+                "ASSESSMENT_START_TIMING lookup_ms=%.1f service_ms=%.1f prep_ms=%.1f serializer_ms=%.1f total_ms=%.1f attempt_id=%s",
+                lookup_ms,
+                service_ms,
+                prep_ms,
+                serializer_ms,
+                total_ms,
+                attempt.id,
             )
 
             res_data["assessment_token"] = token

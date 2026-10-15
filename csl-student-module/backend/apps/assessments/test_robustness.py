@@ -18,6 +18,7 @@ from apps.assessments.models import (
     AssessmentSectionAllocation,
 )
 from apps.assessments.tokens import generate_candidate_token
+from apps.assessments.serializers import AssessmentAttemptDetailSerializer
 
 
 class ProductionRobustnessTests(TestCase):
@@ -484,9 +485,14 @@ class ProductionRobustnessTests(TestCase):
             )
             self.assertEqual(response.status_code, 200)
 
-        # Baseline was 31 queries; with query combining, prefetching, and eliminating redundant validation queries, count is <= 22
-        self.assertLessEqual(len(ctx.captured_queries), 22, f"Executed {len(ctx.captured_queries)} queries (expected <= 22)")
-        print(f"\n[QUERY_BUDGET_VERIFIED] Assessment start completed in {len(ctx.captured_queries)} queries (budget <= 22).")
+        # Baseline was 31 queries, previously optimized to 21; with post-creation cache reuse and pool check elimination, count is <= 15 (<= 13 prod)
+        prod_queries = [
+            q for q in ctx.captured_queries
+            if not q["sql"].strip().startswith("SAVEPOINT") and not q["sql"].strip().startswith("RELEASE")
+        ]
+        self.assertLessEqual(len(ctx.captured_queries), 15, f"Executed {len(ctx.captured_queries)} queries (expected <= 15)")
+        self.assertLessEqual(len(prod_queries), 13, f"Executed {len(prod_queries)} production queries (expected <= 13)")
+        print(f"\n[QUERY_BUDGET_VERIFIED] Assessment start completed in {len(prod_queries)} prod / {len(ctx.captured_queries)} test queries (budget <= 13 prod / <= 15 test).")
 
     def test_answer_save_query_budget(self):
         """Verifies that saving an answer executes at most 5 database operations (3 queries + transaction boundaries)."""
@@ -1189,3 +1195,358 @@ class FinalizationOptimizationTests(TestCase):
 
         self.attempt.refresh_from_db()
         self.assertEqual(self.attempt.state, AssessmentAttempt.State.TIMED_OUT)
+
+
+class AssessmentStartOptimizationTests(TestCase):
+    """
+    Rigorously validates the assessment-start optimizations:
+    1. Response output parity with full database re-fetch.
+    2. Student security: correct answers and keys are never exposed.
+    3. Question uniqueness and option-shuffling semantics.
+    4. Resumed in-progress attempt behavior and single-candidate idempotency.
+    5. Concurrent starts for different candidates.
+    6. Authorization, eligibility, and error regressions.
+    7. Query budget verification (<= 15 in test runner / <= 13 in production).
+    """
+
+    def setUp(self):
+        self.client = Client()
+        self.college = College.objects.create(
+            name="Apex Institute of Technology",
+            code="AIT-TEST",
+            is_active=True,
+        )
+        self.unenrolled_college = College.objects.create(
+            name="Unenrolled Academy",
+            code="UNENROLLED",
+            is_active=True,
+        )
+        self.candidate = Candidate.objects.create(
+            full_name="Optimized Start Candidate",
+            register_number="OPT-START-01",
+            email="opt_start@apex.edu",
+            college_ref=self.college,
+            college=self.college.name,
+            department="Computer Science",
+            year_of_study="Final Year",
+            is_active=True,
+        )
+        self.token = generate_candidate_token(self.candidate.id)
+        self.headers = {"HTTP_AUTHORIZATION": f"Bearer {self.token}"}
+
+        self.config = AssessmentConfig.objects.create(
+            title="Start Optimization Config",
+            duration_minutes=60,
+            total_marks=50,
+            aptitude_count=25,
+            coding_count=25,
+            max_attempts=1,
+            is_active=True,
+        )
+
+        self.assessment = Assessment.objects.create(
+            code="OPT-START-ASSESS",
+            title="Optimized Start Assessment",
+            duration_minutes=60,
+            total_marks=50,
+            aptitude_count=25,
+            coding_count=25,
+            status=Assessment.Status.OPEN,
+        )
+        self.assessment.eligible_colleges.add(self.college)
+
+        self.sec_apt, _ = AssessmentSection.objects.get_or_create(
+            code="APTITUDE", defaults={"name": "Aptitude", "is_active": True}
+        )
+        self.sec_cod, _ = AssessmentSection.objects.get_or_create(
+            code="CODING", defaults={"name": "Coding Fundamentals", "is_active": True}
+        )
+
+        AssessmentSectionAllocation.objects.create(
+            assessment=self.assessment,
+            section=self.sec_apt,
+            question_count=25,
+            marks_per_question=1,
+            order=1,
+        )
+        AssessmentSectionAllocation.objects.create(
+            assessment=self.assessment,
+            section=self.sec_cod,
+            question_count=25,
+            marks_per_question=1,
+            order=2,
+        )
+
+        # Populate sufficient questions (30 aptitude, 30 coding)
+        diff_cycle = [
+            QuestionBank.Difficulty.EASY,
+            QuestionBank.Difficulty.MEDIUM,
+            QuestionBank.Difficulty.HARD,
+        ]
+        questions_to_create = []
+        for i in range(30):
+            questions_to_create.append(
+                QuestionBank(
+                    section=self.sec_apt,
+                    section_type="APTITUDE",
+                    category="Quantitative",
+                    difficulty=diff_cycle[i % 3],
+                    prompt=f"Aptitude Question {i+1}?",
+                    option_a=f"Apt {i+1} Opt A",
+                    option_b=f"Apt {i+1} Opt B",
+                    option_c=f"Apt {i+1} Opt C",
+                    option_d=f"Apt {i+1} Opt D",
+                    correct_option="A",
+                    is_active=True,
+                )
+            )
+            questions_to_create.append(
+                QuestionBank(
+                    section=self.sec_cod,
+                    section_type="CODING",
+                    category="Algorithms",
+                    difficulty=diff_cycle[i % 3],
+                    prompt=f"Coding Question {i+1}?",
+                    option_a=f"Cod {i+1} Opt A",
+                    option_b=f"Cod {i+1} Opt B",
+                    option_c=f"Cod {i+1} Opt C",
+                    option_d=f"Cod {i+1} Opt D",
+                    correct_option="C",
+                    is_active=True,
+                )
+            )
+        QuestionBank.objects.bulk_create(questions_to_create)
+
+    def test_response_parity_with_database_refetch(self):
+        """
+        Verifies that serializing the in-memory cached attempt matches
+        the full database re-fetched attempt across all 50 questions,
+        shuffled options, section allocations, and candidate fields.
+        """
+        res = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(res.status_code, 200)
+        cached_data = res.json()
+
+        # Re-fetch the attempt from the database as the unoptimized code did
+        refetched_attempt = (
+            AssessmentAttempt.objects.select_related("candidate", "assessment", "config")
+            .prefetch_related(
+                "question_snapshots__question",
+                "assessment__section_allocations__section",
+            )
+            .get(pk=cached_data["id"])
+        )
+        expected_data = dict(AssessmentAttemptDetailSerializer(refetched_attempt).data)
+        expected_data["assessment_token"] = cached_data["assessment_token"]
+
+        # Disregard microsecond timestamp on server_time
+        cached_data.pop("server_time", None)
+        expected_data.pop("server_time", None)
+
+        self.assertEqual(cached_data["id"], expected_data["id"])
+        self.assertEqual(cached_data["assessment_id"], expected_data["assessment_id"])
+        self.assertEqual(cached_data["assessment_title"], expected_data["assessment_title"])
+        self.assertEqual(cached_data["candidate_name"], expected_data["candidate_name"])
+        self.assertEqual(cached_data["college"], expected_data["college"])
+        self.assertEqual(cached_data["sections"], expected_data["sections"])
+        self.assertEqual(len(cached_data["questions"]), 50)
+        self.assertEqual(len(expected_data["questions"]), 50)
+
+        for q_cached, q_expected in zip(cached_data["questions"], expected_data["questions"]):
+            self.assertEqual(q_cached["question_order"], q_expected["question_order"])
+            self.assertEqual(q_cached["section_type"], q_expected["section_type"])
+            self.assertEqual(q_cached["category"], q_expected["category"])
+            self.assertEqual(q_cached["prompt"], q_expected["prompt"])
+            self.assertEqual(q_cached["options"], q_expected["options"])
+
+    def test_correct_answers_never_exposed_in_student_responses(self):
+        """
+        Verifies strict student security: correct_option_key, correct_option,
+        and is_correct are never present in the start response.
+        """
+        res = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        # Root level sensitive fields
+        for sensitive in ["total_score", "percentage", "aptitude_score", "coding_score"]:
+            self.assertNotIn(sensitive, data)
+
+        # Question level sensitive fields
+        for q in data["questions"]:
+            self.assertNotIn("correct_option_key", q)
+            self.assertNotIn("correct_option", q)
+            self.assertNotIn("is_correct", q)
+            self.assertIn("prompt", q)
+            self.assertIn("options", q)
+            self.assertEqual(len(q["options"]), 4)
+
+    def test_question_uniqueness_and_option_shuffling(self):
+        """
+        Verifies that exactly 50 unique questions are selected and each
+        has non-empty options for keys A, B, C, D.
+        """
+        res = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(res.status_code, 200)
+        questions = res.json()["questions"]
+        self.assertEqual(len(questions), 50)
+
+        # Uniqueness of question prompts
+        prompts = [q["prompt"] for q in questions]
+        self.assertEqual(len(set(prompts)), 50)
+
+        for q in questions:
+            keys = [opt["key"] for opt in q["options"]]
+            self.assertEqual(sorted(keys), ["A", "B", "C", "D"])
+            for opt in q["options"]:
+                self.assertTrue(len(opt["text"]) > 0)
+
+    def test_resume_in_progress_attempt_idempotent(self):
+        """
+        Verifies that calling start again on an in-progress attempt resumes
+        the existing attempt without creating duplicate attempts.
+        """
+        res1 = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(res1.status_code, 200)
+        attempt_id_1 = res1.json()["id"]
+
+        # Call start a second time for the same candidate
+        res2 = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(res2.status_code, 200)
+        attempt_id_2 = res2.json()["id"]
+
+        self.assertEqual(attempt_id_1, attempt_id_2)
+        total_attempts = AssessmentAttempt.objects.filter(candidate=self.candidate).count()
+        self.assertEqual(total_attempts, 1)
+
+    def test_concurrent_starts_for_different_candidates(self):
+        """
+        Verifies that multiple candidates can start assessments independently
+        receiving distinct attempt IDs and question sets.
+        """
+        cand2 = Candidate.objects.create(
+            full_name="Second Candidate",
+            register_number="OPT-START-02",
+            email="opt_start_2@apex.edu",
+            college_ref=self.college,
+            college=self.college.name,
+            department="IT",
+            year_of_study="Final Year",
+            is_active=True,
+        )
+        token2 = generate_candidate_token(cand2.id)
+
+        res1 = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            **self.headers,
+        )
+        res2 = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token2}",
+        )
+
+        self.assertEqual(res1.status_code, 200)
+        self.assertEqual(res2.status_code, 200)
+        self.assertNotEqual(res1.json()["id"], res2.json()["id"])
+
+    def test_authorization_and_eligibility_regressions(self):
+        """
+        Verifies 401 on missing token, 404 on missing assessment,
+        400 on unenrolled college, 400 on inactive candidate,
+        and 400 on closed assessment.
+        """
+        # 1. Unauthenticated
+        res_unauth = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+        )
+        self.assertEqual(res_unauth.status_code, 401)
+
+        # 2. Non-existent assessment
+        res_404 = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(uuid.uuid4())},
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(res_404.status_code, 404)
+
+        # 3. Unenrolled college candidate
+        cand_unenrolled = Candidate.objects.create(
+            full_name="Unenrolled Candidate",
+            register_number="UNENR-01",
+            email="unenr@unenrolled.edu",
+            college_ref=self.unenrolled_college,
+            college=self.unenrolled_college.name,
+            is_active=True,
+        )
+        token_unenrolled = generate_candidate_token(cand_unenrolled.id)
+        res_unenrolled = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token_unenrolled}",
+        )
+        self.assertEqual(res_unenrolled.status_code, 400)
+        self.assertIn("not enrolled", res_unenrolled.json()["detail"])
+
+        # 4. Inactive candidate
+        cand_inactive = Candidate.objects.create(
+            full_name="Inactive Candidate",
+            register_number="INACT-01",
+            email="inact@apex.edu",
+            college_ref=self.college,
+            college=self.college.name,
+            is_active=False,
+        )
+        token_inactive = generate_candidate_token(cand_inactive.id)
+        res_inactive = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            HTTP_AUTHORIZATION=f"Bearer {token_inactive}",
+        )
+        self.assertEqual(res_inactive.status_code, 400)
+        self.assertIn("deactivated", res_inactive.json()["detail"])
+
+        # 5. Closed assessment
+        self.assessment.status = Assessment.Status.CLOSED
+        self.assessment.save()
+        res_closed = self.client.post(
+            "/api/assessment/start/",
+            {"assessment_id": str(self.assessment.id)},
+            content_type="application/json",
+            **self.headers,
+        )
+        self.assertEqual(res_closed.status_code, 400)
+        self.assertIn("not accepting new attempts", res_closed.json()["detail"])

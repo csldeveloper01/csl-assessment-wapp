@@ -301,3 +301,40 @@ class ServiceTimingInstrumentationTests(TestCase):
         self.assertRegex(second_logs[0], r"lock_ms=\d+\.\d+")
         self.assertRegex(second_logs[0], r"service_ms=\d+\.\d+")
         self.assertIn("final_state=SUBMITTED", second_logs[0])
+
+    def test_assessment_start_timing_logged(self):
+        """Verifies ASSESSMENT_START_TIMING log includes lookup_ms, service_ms, prep_ms, serializer_ms, and total_ms."""
+        self.assessment.aptitude_count = 0
+        self.assessment.coding_count = 1
+        self.assessment.total_marks = 1
+        self.assessment.save()
+
+        cand = Candidate.objects.create(
+            full_name="Start Timing Candidate",
+            register_number="STC-001",
+            email="stc001@example.com",
+            phone_number="9876543219",
+            college_ref=self.college,
+            is_active=True,
+        )
+        token = generate_candidate_token(str(cand.id))
+
+        with self.assertLogs("apps.assessments.views", level="INFO") as captured:
+            res = self.client.post(
+                "/api/assessment/start/",
+                {"assessment_id": str(self.assessment.id)},
+                content_type="application/json",
+                HTTP_AUTHORIZATION=f"Bearer {token}",
+            )
+            self.assertEqual(res.status_code, 200)
+
+        timing_logs = [record for record in captured.output if "ASSESSMENT_START_TIMING" in record]
+        self.assertEqual(len(timing_logs), 1)
+        log_line = timing_logs[0]
+
+        self.assertRegex(log_line, r"lookup_ms=\d+\.\d+")
+        self.assertRegex(log_line, r"service_ms=\d+\.\d+")
+        self.assertRegex(log_line, r"prep_ms=\d+\.\d+")
+        self.assertRegex(log_line, r"serializer_ms=\d+\.\d+")
+        self.assertRegex(log_line, r"total_ms=\d+\.\d+")
+        self.assertIn(f"attempt_id={res.data['id']}", log_line)

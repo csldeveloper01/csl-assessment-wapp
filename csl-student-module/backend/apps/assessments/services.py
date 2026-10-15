@@ -759,7 +759,9 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         raise ValidationError({"detail": f"Maximum attempts ({max_allowed}) reached for this assessment."})
 
     # Dynamic or legacy question selection
-    has_pool_questions = bool(assessment and assessment.questions.exists())
+    has_pool_questions = getattr(assessment, "has_pool_questions", None)
+    if has_pool_questions is None:
+        has_pool_questions = bool(assessment and assessment.questions.exists())
 
     if (
         hasattr(assessment, "_prefetched_objects_cache")
@@ -769,6 +771,8 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         allocations.sort(key=lambda a: (a.order, a.id))
     elif assessment and assessment.pk:
         allocations = list(assessment.section_allocations.select_related("section").order_by("order", "id"))
+        assessment._prefetched_objects_cache = getattr(assessment, "_prefetched_objects_cache", {})
+        assessment._prefetched_objects_cache["section_allocations"] = allocations
     else:
         allocations = []
 
@@ -894,6 +898,11 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         },
     )
     mark("integrity_event")
+
+    # Cache snapshots on attempt instance so view/serializer accesses do not re-query
+    attempt._prefetched_objects_cache = getattr(attempt, "_prefetched_objects_cache", {})
+    attempt._prefetched_objects_cache["question_snapshots"] = snapshots
+
     logger.info(
         "ASSESSMENT_SERVICE_TIMING total_ms=%.1f candidate_id=%s",
         (time.perf_counter() - perf_started) * 1000,
