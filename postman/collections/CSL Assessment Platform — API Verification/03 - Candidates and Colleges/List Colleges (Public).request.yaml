@@ -1,0 +1,18 @@
+$kind: http-request
+name: 'List Colleges (Public)'
+method: GET
+url: '{{base_url}}/api/assessment/colleges/'
+order: 1000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is array", () => pm.expect(pm.response.json()).to.be.an("array"));
+      pm.test("Each college has id, name, code", () => {
+          const colleges = pm.response.json();
+          if (colleges.length > 0) {
+              pm.expect(colleges[0]).to.have.all.keys("id", "name", "code");
+              pm.environment.set("college_id", String(colleges[0].id));
+          }
+      });

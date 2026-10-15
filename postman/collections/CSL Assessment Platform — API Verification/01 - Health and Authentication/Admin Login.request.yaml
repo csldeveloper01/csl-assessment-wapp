@@ -1,0 +1,39 @@
+$kind: http-request
+name: 'Admin Login'
+method: POST
+url: '{{base_url}}/api/auth/login/'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "email": "admin@csl.com",
+      "password": "your_admin_password"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("message is Login successful", () => {
+          const body = pm.response.json();
+          pm.expect(body.message).to.eql("Login successful.");
+      });
+      pm.test("session_key is present", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("session_key");
+          pm.expect(body.session_key).to.be.a("string").and.not.empty;
+          pm.environment.set("admin_token", body.session_key);
+      });
+      pm.test("user object has required fields", () => {
+          const user = pm.response.json().user;
+          pm.expect(user).to.have.all.keys("email", "name", "role", "status", "is_staff", "is_superuser");
+      });
+      pm.test("user is staff or admin", () => {
+          const user = pm.response.json().user;
+          pm.expect(user.is_staff || user.role === "admin").to.be.true;
+      });

@@ -1,0 +1,12 @@
+$kind: http-request
+name: 'List Colleges - Latency'
+method: GET
+url: '{{base_url}}/api/assessment/colleges/'
+order: 2000
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Colleges list under 2000ms", () => pm.expect(pm.response.responseTime).to.be.below(2000));
+      console.log("Colleges list response time:", pm.response.responseTime, "ms");

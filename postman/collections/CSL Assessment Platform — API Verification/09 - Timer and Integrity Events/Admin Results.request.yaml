@@ -1,0 +1,14 @@
+$kind: http-request
+name: 'Admin Results'
+method: GET
+url: '{{base_url}}/api/csl-admin/results/'
+order: 5000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);

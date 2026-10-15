@@ -1,0 +1,28 @@
+$kind: http-request
+name: 'Start Assessment'
+method: POST
+url: '{{base_url}}/api/assessment/start/'
+order: 4000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "assessment_id": "{{assessment_id}}"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 201", () => pm.expect([200, 201]).to.include(pm.response.code));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("attempt_id is present", () => {
+          const body = pm.response.json();
+          const attemptId = body.attempt_id || body.id || (body.attempt && body.attempt.id);
+          pm.expect(attemptId).to.be.a("string").and.not.empty;
+          pm.environment.set("attempt_id", String(attemptId));
+      });

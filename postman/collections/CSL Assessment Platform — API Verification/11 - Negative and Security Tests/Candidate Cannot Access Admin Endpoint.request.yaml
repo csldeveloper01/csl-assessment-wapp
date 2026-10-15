@@ -1,0 +1,15 @@
+$kind: http-request
+name: 'Candidate Cannot Access Admin Endpoint'
+method: GET
+url: '{{base_url}}/api/csl-admin/candidates/'
+order: 1000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Candidate token rejected on admin endpoint (401 or 403)", () => {
+          pm.expect([401, 403]).to.include(pm.response.code);
+      });

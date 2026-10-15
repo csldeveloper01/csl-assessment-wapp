@@ -1,0 +1,37 @@
+$kind: http-request
+name: 'Candidate Register'
+method: POST
+url: '{{base_url}}/api/assessment/register/'
+order: 1000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "full_name": "Test Candidate Postman",
+      "register_number": "TC2024001",
+      "email": "testcandidate@postman.test",
+      "college_id": "{{college_id}}",
+      "department": "Computer Science",
+      "year_of_study": "3",
+      "phone_number": "9876543210"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 201", () => pm.expect([200, 201]).to.include(pm.response.code));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("token is present", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("token");
+          pm.expect(body.token).to.be.a("string").and.not.empty;
+          pm.environment.set("candidate_token", body.token);
+      });
+      pm.test("candidate id is present", () => {
+          const body = pm.response.json();
+          const candidateId = body.candidate_id || (body.candidate && body.candidate.id);
+          if (candidateId) pm.environment.set("candidate_id", String(candidateId));
+      });

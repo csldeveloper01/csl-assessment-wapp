@@ -1,0 +1,26 @@
+$kind: http-request
+name: 'Student Register - Duplicate Email'
+method: POST
+url: '{{base_url}}/api/auth/register/'
+order: 5000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "email": "admin@csl.com",
+      "name": "Duplicate User",
+      "registration_number": "DUP2024001",
+      "password": "TestPass123!"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 400 for duplicate email", () => pm.response.to.have.status(400));
+      pm.test("email error in response", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("email");
+      });

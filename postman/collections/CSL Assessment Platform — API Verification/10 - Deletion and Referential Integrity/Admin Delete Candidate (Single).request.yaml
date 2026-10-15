@@ -1,0 +1,13 @@
+$kind: http-request
+name: 'Admin Delete Candidate (Single)'
+method: DELETE
+url: '{{base_url}}/api/csl-admin/candidates/{{candidate_id}}/'
+order: 4000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 204 or 404", () => pm.expect([204, 404]).to.include(pm.response.code));

@@ -1,0 +1,25 @@
+$kind: http-request
+name: 'Bulk Sync Answers'
+method: POST
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/sync-answers/'
+order: 3000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "answers": [
+        {"question_order": 1, "selected_option": "A"},
+        {"question_order": 2, "selected_option": "B"}
+      ]
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 201 or 204", () => pm.expect([200, 201, 204]).to.include(pm.response.code));
+      pm.test("Response is JSON", () => pm.response.to.be.json);

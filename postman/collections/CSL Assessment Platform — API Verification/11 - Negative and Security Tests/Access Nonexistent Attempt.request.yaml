@@ -1,0 +1,15 @@
+$kind: http-request
+name: 'Access Nonexistent Attempt'
+method: GET
+url: '{{base_url}}/api/assessment/attempts/00000000-0000-0000-0000-000000000000/'
+order: 3000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 403 or 404 for nonexistent attempt", () => {
+          pm.expect([403, 404]).to.include(pm.response.code);
+      });

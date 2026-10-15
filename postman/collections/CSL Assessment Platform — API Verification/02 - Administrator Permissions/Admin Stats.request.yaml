@@ -1,0 +1,15 @@
+$kind: http-request
+name: 'Admin Stats'
+method: GET
+url: '{{base_url}}/api/csl-admin/stats/'
+order: 2000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("Response time under 3000ms", () => pm.expect(pm.response.responseTime).to.be.below(3000));

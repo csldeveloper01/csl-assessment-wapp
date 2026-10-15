@@ -1,0 +1,28 @@
+$kind: http-request
+name: 'Candidate Register - Missing Phone'
+method: POST
+url: '{{base_url}}/api/assessment/register/'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "full_name": "No Phone Candidate",
+      "register_number": "NP2024001",
+      "email": "nophone@postman.test",
+      "college_id": "{{college_id}}",
+      "department": "Engineering",
+      "year_of_study": "2"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 400 for missing phone", () => pm.response.to.have.status(400));
+      pm.test("phone_number error in response", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("phone_number");
+      });

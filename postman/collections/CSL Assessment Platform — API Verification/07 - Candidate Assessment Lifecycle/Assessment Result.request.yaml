@@ -1,0 +1,19 @@
+$kind: http-request
+name: 'Assessment Result'
+method: GET
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/result/'
+order: 7000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 403", () => pm.expect([200, 403]).to.include(pm.response.code));
+      if (pm.response.code === 200) {
+          pm.test("Result has score or summary", () => {
+              const body = pm.response.json();
+              pm.expect(body).to.satisfy(b => b.score !== undefined || b.total_score !== undefined || b.summary !== undefined);
+          });
+      }

@@ -1,0 +1,14 @@
+$kind: http-request
+name: 'Admin Prepare Assessment'
+method: POST
+url: '{{base_url}}/api/csl-admin/assessments/{{assessment_id}}/prepare/'
+order: 4000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 201 or 204", () => pm.expect([200, 201, 204]).to.include(pm.response.code));
+      pm.test("Response is JSON", () => pm.response.to.be.json);

@@ -1,0 +1,27 @@
+$kind: http-request
+name: 'Admin Create College'
+method: POST
+url: '{{base_url}}/api/csl-admin/colleges/'
+order: 3000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "name": "Test College Postman",
+      "code": "TCP001",
+      "location": "Test City",
+      "is_active": true
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 201", () => pm.expect([200, 201]).to.include(pm.response.code));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      const body = pm.response.json();
+      if (body.id) pm.environment.set("college_id", String(body.id));

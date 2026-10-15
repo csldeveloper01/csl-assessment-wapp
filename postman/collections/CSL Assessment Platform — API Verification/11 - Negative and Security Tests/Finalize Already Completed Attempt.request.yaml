@@ -1,0 +1,22 @@
+$kind: http-request
+name: 'Finalize Already Completed Attempt'
+method: POST
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/finalize/'
+order: 4000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {}
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status is 200, 400, or 409", () => {
+          pm.expect([200, 400, 409]).to.include(pm.response.code);
+      });
+      pm.test("Response is JSON", () => pm.response.to.be.json);

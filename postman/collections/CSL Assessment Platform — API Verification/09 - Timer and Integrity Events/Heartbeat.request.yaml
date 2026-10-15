@@ -1,0 +1,26 @@
+$kind: http-request
+name: 'Heartbeat'
+method: POST
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/heartbeat/'
+order: 1000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {}
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 204", () => pm.expect([200, 204]).to.include(pm.response.code));
+      if (pm.response.code === 200) {
+          pm.test("Heartbeat response has remaining_seconds", () => {
+              const body = pm.response.json();
+              pm.expect(body).to.have.property("remaining_seconds");
+              pm.expect(body.remaining_seconds).to.be.a("number");
+          });
+      }

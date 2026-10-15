@@ -1,0 +1,19 @@
+$kind: http-request
+name: 'Admin Get Assessment Detail'
+method: GET
+url: '{{base_url}}/api/csl-admin/assessments/{{assessment_id}}/'
+order: 3000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Assessment has id, title, status", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("id");
+          pm.expect(body).to.have.property("title");
+          pm.expect(body).to.have.property("status");
+      });

@@ -1,0 +1,29 @@
+$kind: http-request
+name: 'Register with Invalid Email'
+method: POST
+url: '{{base_url}}/api/assessment/register/'
+order: 2000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "full_name": "Bad Email User",
+      "register_number": "BE2024001",
+      "email": "not-an-email",
+      "college_id": "{{college_id}}",
+      "department": "CS",
+      "year_of_study": "1",
+      "phone_number": "9876543210"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 400 for invalid email", () => pm.response.to.have.status(400));
+      pm.test("email error in response", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("email");
+      });

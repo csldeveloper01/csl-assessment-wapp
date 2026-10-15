@@ -1,0 +1,6 @@
+$kind: collection
+name: 'Deletion and Referential Integrity'
+order: 10000
+description: |-
+  WARNING: These requests perform destructive operations.
+  Only run against disposable test records. Never run bulk-delete against production data.

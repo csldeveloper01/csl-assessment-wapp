@@ -1,0 +1,24 @@
+$kind: http-request
+name: 'Candidate Get Eligible Assessments'
+method: GET
+url: '{{base_url}}/api/assessment/candidate-assessments/'
+order: 3000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("Response has candidate and assessments", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("candidate");
+          pm.expect(body).to.have.property("assessments");
+          pm.expect(body.assessments).to.be.an("array");
+      });
+      pm.test("candidate object has required fields", () => {
+          const c = pm.response.json().candidate;
+          pm.expect(c).to.have.all.keys("id", "full_name", "register_number", "college", "college_id", "department", "year_of_study", "is_active");
+      });

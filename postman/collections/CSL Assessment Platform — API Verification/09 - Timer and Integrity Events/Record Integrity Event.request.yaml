@@ -1,0 +1,28 @@
+$kind: http-request
+name: 'Record Integrity Event'
+method: POST
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/integrity-event/'
+order: 2000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "event_type": "TAB_SWITCH",
+      "details": "Candidate switched to another tab"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 201", () => pm.expect([200, 201]).to.include(pm.response.code));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("Server-generated timestamp is present", () => {
+          const body = pm.response.json();
+          const ts = body.timestamp || body.created_at || body.event_time;
+          pm.expect(ts).to.be.a("string").and.not.empty;
+      });

@@ -1,0 +1,19 @@
+$kind: http-request
+name: 'Admin List Assessments'
+method: GET
+url: '{{base_url}}/api/csl-admin/assessments/'
+order: 1000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      const body = pm.response.json();
+      const list = Array.isArray(body) ? body : (body.results || body.data || []);
+      if (list.length > 0 && list[0].id) {
+          pm.environment.set("assessment_id", String(list[0].id));
+      }

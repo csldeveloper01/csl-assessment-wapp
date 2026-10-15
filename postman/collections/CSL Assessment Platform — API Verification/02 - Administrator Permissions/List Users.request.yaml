@@ -1,0 +1,20 @@
+$kind: http-request
+name: 'List Users'
+method: GET
+url: '{{base_url}}/api/csl-admin/users/'
+order: 4000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("Response is array or paginated", () => {
+          const body = pm.response.json();
+          const isArray = Array.isArray(body);
+          const isPaginated = body && (Array.isArray(body.results) || Array.isArray(body.data));
+          pm.expect(isArray || isPaginated).to.be.true;
+      });

@@ -1,0 +1,13 @@
+$kind: http-request
+name: 'Admin Toggle Question Active'
+method: POST
+url: '{{base_url}}/api/csl-admin/questions/{{question_id}}/toggle/'
+order: 2000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 204", () => pm.expect([200, 204]).to.include(pm.response.code));

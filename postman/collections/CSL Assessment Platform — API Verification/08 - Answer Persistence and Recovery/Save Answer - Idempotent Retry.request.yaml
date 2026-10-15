@@ -1,0 +1,25 @@
+$kind: http-request
+name: 'Save Answer - Idempotent Retry'
+method: POST
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/answer/'
+order: 2000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "question_order": 1,
+      "selected_option": "A"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Idempotent retry returns 200 or 201 (not 409)", () => {
+          pm.expect([200, 201]).to.include(pm.response.code);
+      });
+      pm.test("Response is JSON", () => pm.response.to.be.json);

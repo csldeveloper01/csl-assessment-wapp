@@ -1,0 +1,24 @@
+$kind: http-request
+name: 'Admin Pending Login (Student Account)'
+method: POST
+url: '{{base_url}}/api/auth/login/'
+order: 6000
+headers:
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "email": "pendingstudent@test.com",
+      "password": "TestPass123!"
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 403 for pending account", () => pm.response.to.have.status(403));
+      pm.test("error is pending", () => {
+          const body = pm.response.json();
+          pm.expect(body.error).to.eql("pending");
+      });

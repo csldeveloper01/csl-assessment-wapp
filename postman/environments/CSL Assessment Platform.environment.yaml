@@ -1,0 +1,35 @@
+name: 'CSL Assessment Platform'
+values:
+  - key: base_url
+    value: 'https://csl-assessment-wapp.onrender.com'
+    description: 'Backend base URL'
+  - key: admin_token
+    value: ''
+    description: 'Session cookie value from admin login (sessionid=<value>)'
+  - key: candidate_token
+    value: ''
+    description: 'JWT token returned by /api/assessment/register/'
+  - key: assessment_id
+    value: ''
+    description: 'UUID of the target assessment (set by test scripts)'
+  - key: candidate_id
+    value: ''
+    description: 'UUID of the candidate (set by test scripts)'
+  - key: attempt_id
+    value: ''
+    description: 'UUID of the assessment attempt (set by test scripts)'
+  - key: question_id
+    value: ''
+    description: 'Integer ID of a question in the question bank'
+  - key: section_id
+    value: ''
+    description: 'Integer ID of a custom section'
+  - key: college_id
+    value: ''
+    description: 'Integer ID of a college (set by test scripts)'
+  - key: user_id
+    value: ''
+    description: 'Integer ID of a platform user (set by test scripts)'
+  - key: integrity_event_id
+    value: ''
+    description: 'Integer ID of an integrity event (set by test scripts)'

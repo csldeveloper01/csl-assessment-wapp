@@ -1,0 +1,18 @@
+$kind: http-request
+name: 'Get Current User (Me)'
+method: GET
+url: '{{base_url}}/api/auth/me/'
+order: 4000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("user has email field", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("email");
+      });

@@ -1,0 +1,21 @@
+$kind: http-request
+name: 'Heartbeat - Latency'
+method: POST
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/heartbeat/'
+order: 5000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {}
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 204", () => pm.expect([200, 204]).to.include(pm.response.code));
+      pm.test("Heartbeat under 1000ms", () => pm.expect(pm.response.responseTime).to.be.below(1000));
+      console.log("Heartbeat response time:", pm.response.responseTime, "ms");

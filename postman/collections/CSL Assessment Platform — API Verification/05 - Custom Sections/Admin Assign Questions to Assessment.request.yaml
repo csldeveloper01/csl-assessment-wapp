@@ -1,0 +1,21 @@
+$kind: http-request
+name: 'Admin Assign Questions to Assessment'
+method: POST
+url: '{{base_url}}/api/csl-admin/assessments/{{assessment_id}}/assign-questions/'
+order: 4000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+  - key: Content-Type
+    value: application/json
+body:
+  type: json
+  content: |-
+    {
+      "sections": []
+    }
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200 or 201 or 204", () => pm.expect([200, 201, 204]).to.include(pm.response.code));

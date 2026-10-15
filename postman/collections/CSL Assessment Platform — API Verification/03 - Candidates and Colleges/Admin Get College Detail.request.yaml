@@ -1,0 +1,18 @@
+$kind: http-request
+name: 'Admin Get College Detail'
+method: GET
+url: '{{base_url}}/api/csl-admin/colleges/{{college_id}}/'
+order: 4000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("College has id and name", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("id");
+          pm.expect(body).to.have.property("name");
+      });

@@ -1,0 +1,10 @@
+$kind: collection
+name: 'CSL Assessment Platform — API Verification'
+description: |-
+  Automated API verification collection for the CSL Assessment Platform.
+  Backend: https://csl-assessment-wapp.onrender.com
+  
+  Auth notes:
+  - Admin endpoints (/api/csl-admin/*) use Django session auth. Login via POST /api/auth/login/ and pass the returned session_key as Cookie: sessionid=<value> in the admin_token variable.
+  - Candidate endpoints (/api/assessment/*) use a custom JWT. Register via POST /api/assessment/register/ and store the returned token in candidate_token.
+  - Student portal endpoints (/api/auth/*, /api/student/*) use Django session auth.

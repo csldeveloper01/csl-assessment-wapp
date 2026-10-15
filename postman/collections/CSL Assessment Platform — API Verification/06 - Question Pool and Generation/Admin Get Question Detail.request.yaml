@@ -1,0 +1,22 @@
+$kind: http-request
+name: 'Admin Get Question Detail'
+method: GET
+url: '{{base_url}}/api/csl-admin/questions/{{question_id}}/'
+order: 3000
+headers:
+  - key: Cookie
+    value: 'sessionid={{admin_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Question has id and prompt", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("id");
+          pm.expect(body).to.have.property("prompt");
+      });
+      pm.test("correct_option_key is present for admin", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("correct_option_key");
+      });

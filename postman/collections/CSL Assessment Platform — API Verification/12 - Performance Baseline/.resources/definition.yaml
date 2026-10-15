@@ -1,0 +1,6 @@
+$kind: collection
+name: 'Performance Baseline'
+order: 12000
+description: |-
+  Read-only performance baseline requests. Run these to establish response time baselines
+  before load testing. These do NOT create or modify data.

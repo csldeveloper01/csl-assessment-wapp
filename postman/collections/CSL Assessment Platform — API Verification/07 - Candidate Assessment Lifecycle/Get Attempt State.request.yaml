@@ -1,0 +1,42 @@
+$kind: http-request
+name: 'Get Attempt State'
+method: GET
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/'
+order: 5000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Response is JSON", () => pm.response.to.be.json);
+      pm.test("Attempt has id, state, questions", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("id");
+          pm.expect(body).to.have.property("state");
+          pm.expect(body).to.have.property("questions");
+          pm.expect(body.questions).to.be.an("array");
+      });
+      pm.test("remaining_seconds is a non-negative number", () => {
+          const body = pm.response.json();
+          pm.expect(body.remaining_seconds).to.be.a("number");
+          pm.expect(body.remaining_seconds).to.be.at.least(0);
+      });
+      pm.test("correct_option_key NOT in any question (security)", () => {
+          const questions = pm.response.json().questions || [];
+          questions.forEach(q => {
+              pm.expect(q).to.not.have.property("correct_option_key");
+          });
+      });
+      pm.test("No duplicate question_order values", () => {
+          const questions = pm.response.json().questions || [];
+          const orders = questions.map(q => q.question_order);
+          const unique = [...new Set(orders)];
+          pm.expect(orders.length).to.eql(unique.length);
+      });
+      pm.test("server_time is present", () => {
+          const body = pm.response.json();
+          pm.expect(body).to.have.property("server_time");
+      });

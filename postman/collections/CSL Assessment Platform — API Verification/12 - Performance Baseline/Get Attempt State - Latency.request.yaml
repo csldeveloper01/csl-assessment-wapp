@@ -1,0 +1,15 @@
+$kind: http-request
+name: 'Get Attempt State - Latency'
+method: GET
+url: '{{base_url}}/api/assessment/attempts/{{attempt_id}}/'
+order: 4000
+headers:
+  - key: Authorization
+    value: 'Bearer {{candidate_token}}'
+scripts:
+  - type: afterResponse
+    language: text/javascript
+    code: |-
+      pm.test("Status 200", () => pm.response.to.have.status(200));
+      pm.test("Attempt state under 2000ms", () => pm.expect(pm.response.responseTime).to.be.below(2000));
+      console.log("Attempt state response time:", pm.response.responseTime, "ms");
