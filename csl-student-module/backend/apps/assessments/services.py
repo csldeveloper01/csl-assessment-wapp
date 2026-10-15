@@ -88,7 +88,17 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
     Checks that the Question Bank or assessment question pool contains enough active questions for each section.
     Supports dynamic section allocations with fallback to legacy aptitude and coding counts.
     """
-    scope_name = f"question pool for '{assessment.title}' ({assessment.code})" if (assessment and assessment.questions.exists()) else "bank"
+    has_assessment_questions = (
+    assessment.questions.exists()
+    if assessment
+    else False
+    )
+
+    scope_name = (
+        f"question pool for '{assessment.title}' ({assessment.code})"
+        if has_assessment_questions
+        else "bank"
+    )
     errors = []
 
     has_allocations = False
@@ -109,7 +119,7 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
                 | models.Q(section_type__iexact=sec.code)
                 | models.Q(section__code__iexact=sec.code)
             )
-            if assessment.questions.exists():
+            if has_assessment_questions:
                 available = assessment.questions.filter(sec_q_filter, is_active=True).distinct().count()
             else:
                 available = QuestionBank.objects.filter(sec_q_filter, is_active=True).distinct().count()
