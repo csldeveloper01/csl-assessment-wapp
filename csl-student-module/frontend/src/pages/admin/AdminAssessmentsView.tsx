@@ -456,8 +456,8 @@ export function AdminAssessmentsView({
         ...createForm,
         code: createForm.code.trim().toUpperCase(),
         total_marks: totalMarks,
-        aptitude_count: aptSec ? Number(aptSec.question_count) : Math.floor(totalQuestions / 2),
-        coding_count: codSec ? Number(codSec.question_count) : Math.ceil(totalQuestions / 2),
+        aptitude_count: aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2)),
+        coding_count: codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2)),
         sections: payloadSections,
       });
       setShowCreateModal(false);
@@ -495,7 +495,7 @@ export function AdminAssessmentsView({
         }))
       );
     } else {
-      // Legacy fallback: Aptitude + Coding
+      // Fallback for legacy assessments without sections: look for active sections or Aptitude/Coding
       const fallbackList: AssessmentSectionDraft[] = [];
       const aptLib = availableSections.find((s) => s.code.toUpperCase() === 'APTITUDE');
       const codLib = availableSections.find((s) => s.code.toUpperCase() === 'CODING');
@@ -514,6 +514,15 @@ export function AdminAssessmentsView({
           name: codLib.name,
           code: codLib.code,
           question_count: assessment.coding_count || 25,
+          marks_per_question: 1,
+        });
+      }
+      if (fallbackList.length === 0 && availableSections.length > 0) {
+        fallbackList.push({
+          section_id: availableSections[0].id,
+          name: availableSections[0].name,
+          code: availableSections[0].code,
+          question_count: 25,
           marks_per_question: 1,
         });
       }
@@ -567,8 +576,8 @@ export function AdminAssessmentsView({
         description: editForm.description,
         duration_minutes: Number(editForm.duration_minutes),
         total_marks: totalMarks,
-        aptitude_count: aptSec ? Number(aptSec.question_count) : Math.floor(totalQuestions / 2),
-        coding_count: codSec ? Number(codSec.question_count) : Math.ceil(totalQuestions / 2),
+        aptitude_count: aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2)),
+        coding_count: codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2)),
         max_attempts: Number(editForm.max_attempts),
         max_tab_switches_warning: Number(editForm.max_tab_switches_warning),
         auto_submit_on_tab_limit: editForm.auto_submit_on_tab_limit,

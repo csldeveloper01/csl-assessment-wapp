@@ -298,3 +298,6 @@ LOGGING = {
         },
     },
 }
+
+# Django Admin interface toggle (can be disabled in production via environment variable)
+DJANGO_ADMIN_ENABLED = os.getenv('DJANGO_ADMIN_ENABLED', 'True').strip().lower() in ('true', '1', 'yes')

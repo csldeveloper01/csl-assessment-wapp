@@ -32,27 +32,41 @@ export function AssessmentExamPage() {
   const [saveStatus, setSaveStatus] = useState<Record<number, 'saved' | 'saving' | 'failed'>>({});
 
   // Active section tab for navigation filtering (dynamic section code)
-  const [activeSectionTab, setActiveSectionTab] = useState<string>('APTITUDE');
+  const [activeSectionTab, setActiveSectionTab] = useState<string>('');
 
   // Network & Disconnection Grace State
   const [isPaused, setIsPaused] = useState<boolean>(false);
   const [isOffline, setIsOffline] = useState<boolean>(!navigator.onLine);
 
-  // Derive dynamic sections from attempt questions
+  // Derive dynamic sections from attempt questions or configured sections
   const sectionsList = useMemo(() => {
+    if (attempt && attempt.sections && attempt.sections.length > 0) {
+      return attempt.sections.map((s) => ({
+        code: s.code,
+        name: s.name,
+        count: s.question_count,
+      }));
+    }
     if (!attempt || !attempt.questions) return [];
-    const map = new Map<string, { code: string; count: number }>();
+    const map = new Map<string, { code: string; name: string; count: number }>();
     attempt.questions.forEach((q) => {
       const secCode = q.section_type || 'GENERAL';
       const existing = map.get(secCode);
       if (existing) {
         existing.count += 1;
       } else {
-        map.set(secCode, { code: secCode, count: 1 });
+        const displayName = secCode === 'APTITUDE' ? 'Aptitude' : secCode === 'CODING' ? 'Coding Fundamentals' : secCode.replace(/_/g, ' ');
+        map.set(secCode, { code: secCode, name: displayName, count: 1 });
       }
     });
     return Array.from(map.values());
   }, [attempt]);
+
+  useEffect(() => {
+    if (!activeSectionTab && sectionsList.length > 0) {
+      setActiveSectionTab(sectionsList[0].code);
+    }
+  }, [sectionsList, activeSectionTab]);
 
   const [remainingSeconds, setRemainingSeconds] = useState<number>(0);
   const [targetEndTimeMs, setTargetEndTimeMs] = useState<number | null>(null);
@@ -1286,9 +1300,9 @@ export function AssessmentExamPage() {
                       textOverflow: 'ellipsis',
                       flex: 1,
                     }}
-                    title={q.section_type === 'APTITUDE' ? 'Aptitude' : 'Coding'}
+                    title={sectionsList.find((s) => s.code === q.section_type)?.name || q.section_type || 'General'}
                   >
-                    {q.section_type === 'APTITUDE' ? 'Aptitude' : 'Coding'}
+                    {sectionsList.find((s) => s.code === q.section_type)?.name || q.section_type || 'General'}
                   </span>
                 </button>
               );
@@ -1389,7 +1403,7 @@ export function AssessmentExamPage() {
                     borderRadius: '9999px',
                   }}
                 >
-                  {currentQ.section_type === 'APTITUDE' ? 'Aptitude' : currentQ.section_type === 'CODING' ? 'Coding Fundamentals' : currentQ.section_type}
+                  {sectionsList.find((s) => s.code === currentQ.section_type)?.name || currentQ.section_type || 'General'}
                 </span>
 
                 {/* Save Status pill */}
@@ -1884,27 +1898,19 @@ export function AssessmentExamPage() {
               </h3>
             </div>
 
-            {/* 5 Metadata Rows */}
+            {/* Metadata Rows */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
-                <span>Aptitude Questions</span>
-                <strong style={{ color: '#0B2E6F' }}>25</strong>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
-                <span>Coding Questions</span>
-                <strong style={{ color: '#0B2E6F' }}>25</strong>
-              </div>
-              <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
                 <span>Total Questions</span>
-                <strong style={{ color: '#0B2E6F' }}>50</strong>
+                <strong style={{ color: '#0B2E6F' }}>{attempt?.questions?.length || attempt?.total_questions || 0}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
                 <span>Total Marks</span>
-                <strong style={{ color: '#0B2E6F' }}>50</strong>
+                <strong style={{ color: '#0B2E6F' }}>{attempt?.questions?.length || attempt?.total_questions || 0}</strong>
               </div>
               <div style={{ display: 'flex', justifyContent: 'space-between', color: '#64748B' }}>
                 <span>Time Duration</span>
-                <strong style={{ color: '#0B2E6F' }}>60 Minutes</strong>
+                <strong style={{ color: '#0B2E6F' }}>{Math.max(1, Math.round((attempt?.remaining_seconds || 3600) / 60))} Minutes</strong>
               </div>
             </div>
           </div>
@@ -1954,9 +1960,16 @@ export function AssessmentExamPage() {
                 lineHeight: 1.5,
               }}
             >
-              You have answered <strong>{answeredCount}</strong> of 50 questions (
-              <strong>{50 - answeredCount}</strong> unattempted). Once submitted, answers cannot be
-              modified. Are you sure you wish to finalize your assessment?
+              You have answered <strong>{answeredCount}</strong> of{' '}
+              {attempt?.questions?.length || attempt?.total_questions || 50} questions (
+              <strong>
+                {Math.max(
+                  0,
+                  (attempt?.questions?.length || attempt?.total_questions || 50) - answeredCount
+                )}
+              </strong>{' '}
+              unattempted). Once submitted, answers cannot be modified. Are you sure you wish to
+              finalize your assessment?
             </p>
 
             <div

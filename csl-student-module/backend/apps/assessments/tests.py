@@ -2366,3 +2366,91 @@ class AssessmentGenerationAndPoolThresholdTests(TestCase):
         self.assertEqual(res2.status_code, 200)
         self.assertTrue(res2.data["is_sufficient"])
 
+    def test_admin_bulk_update_custom_section_and_category(self):
+        """AdminQuestionBulkUpdateView properly supports custom sections and categories."""
+        custom_sec = AssessmentSection.objects.create(name="DevOps Engineering", code="DEVOPS")
+        q1 = QuestionBank.objects.create(
+            prompt="Docker question 1",
+            section_type="APTITUDE",
+            category="General",
+            difficulty=QuestionBank.Difficulty.EASY,
+            option_a="A", option_b="B", option_c="C", option_d="D",
+            correct_option="A",
+            is_active=True,
+        )
+        q2 = QuestionBank.objects.create(
+            prompt="Kubernetes question 2",
+            section_type="APTITUDE",
+            category="General",
+            difficulty=QuestionBank.Difficulty.EASY,
+            option_a="A", option_b="B", option_c="C", option_d="D",
+            correct_option="B",
+            is_active=True,
+        )
+
+        client = Client()
+        client.force_login(self.admin)
+
+        # Bulk update to custom section DEVOPS and category Cloud
+        res = client.post(
+            "/api/csl-admin/questions/bulk-update/",
+            {
+                "ids": [q1.id, q2.id],
+                "section_type": "DEVOPS",
+                "category": "Cloud Infrastructure",
+                "difficulty": "HARD",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["updated_count"], 2)
+
+        q1.refresh_from_db()
+        q2.refresh_from_db()
+        self.assertEqual(q1.section_type, "DEVOPS")
+        self.assertEqual(q1.section, custom_sec)
+        self.assertEqual(q1.category, "Cloud Infrastructure")
+        self.assertEqual(q1.difficulty, "HARD")
+
+        self.assertEqual(q2.section_type, "DEVOPS")
+        self.assertEqual(q2.section, custom_sec)
+        self.assertEqual(q2.category, "Cloud Infrastructure")
+        self.assertEqual(q2.difficulty, "HARD")
+
+    def test_admin_empty_question_pool_and_validation(self):
+        """Admin question endpoints validate assessment target pool and handle empty pools cleanly."""
+        client = Client()
+        client.force_login(self.admin)
+
+        # Creating question without target assessment pool fails with 400
+        res_create = client.post(
+            "/api/csl-admin/questions/",
+            {
+                "prompt": "Orphan question without pool",
+                "section_type": "APTITUDE",
+                "difficulty": "EASY",
+                "option_a": "1",
+                "option_b": "2",
+                "option_c": "3",
+                "option_d": "4",
+                "correct_option": "A",
+                "assessment_id": "",
+            },
+            content_type="application/json",
+        )
+        self.assertEqual(res_create.status_code, 400)
+        self.assertIn("Target assessment pool", str(res_create.data))
+
+        # Filter by assessment with 0 questions returns empty list
+        empty_assessment = Assessment.objects.create(
+            code="EMPTY-POOL-ASSESSMENT",
+            title="Empty Pool Assessment",
+            total_marks=50,
+            status=Assessment.Status.DRAFT,
+        )
+        res_list = client.get(f"/api/csl-admin/questions/?assessment_id={empty_assessment.id}")
+        self.assertEqual(res_list.status_code, 200)
+        # res_list.data is a list of questions directly
+        self.assertEqual(len(res_list.data), 0)
+
+

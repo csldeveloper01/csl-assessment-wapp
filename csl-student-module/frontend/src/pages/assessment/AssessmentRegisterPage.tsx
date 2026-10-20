@@ -969,9 +969,11 @@ export function AssessmentRegisterPage() {
                             : (assessment.aptitude_count || 0) + (assessment.coding_count || 0)}{' '}
                           MCQs
                         </strong>{' '}
-                        ({assessment.sections && assessment.sections.length > 0
-                          ? assessment.sections.map((s) => `${s.question_count} ${s.code || s.name}`).join(' / ')
-                          : `${assessment.aptitude_count || 0} Apt / ${assessment.coding_count || 0} Code`})
+                        {assessment.sections && assessment.sections.length > 0
+                          ? ` (${assessment.sections.map((s) => `${s.question_count} ${s.code || s.name}`).join(' / ')})`
+                          : (assessment.aptitude_count || assessment.coding_count)
+                            ? ` (${assessment.aptitude_count || 0} Apt / ${assessment.coding_count || 0} Code)`
+                            : ''}
                       </span>
                       <span>·</span>
                       <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>

@@ -134,15 +134,18 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
   // Bulk edit field checkboxes & values
   const [bulkFields, setBulkFields] = useState({
     section_type: false,
+    category: false,
     difficulty: false,
     is_active: false,
   });
   const [bulkValues, setBulkValues] = useState<{
     section_type: string;
+    category: string;
     difficulty: 'EASY' | 'MEDIUM' | 'HARD';
     is_active: boolean;
   }>({
     section_type: 'APTITUDE',
+    category: '',
     difficulty: 'MEDIUM',
     is_active: true,
   });
@@ -343,14 +346,16 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
     }
   };
 
-  const openBulkModal = () => {
+  const openBulkModal = (initialField?: 'section_type' | 'difficulty' | 'category' | 'is_active') => {
     setBulkFields({
-      section_type: false,
-      difficulty: false,
-      is_active: false,
+      section_type: initialField === 'section_type',
+      category: initialField === 'category',
+      difficulty: initialField === 'difficulty',
+      is_active: initialField === 'is_active',
     });
     setBulkValues({
-      section_type: 'APTITUDE',
+      section_type: sections.length > 0 ? sections[0].code : 'APTITUDE',
+      category: '',
       difficulty: 'MEDIUM',
       is_active: true,
     });
@@ -361,6 +366,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
     e.preventDefault();
     const hasField =
       bulkFields.section_type ||
+      bulkFields.category ||
       bulkFields.difficulty ||
       bulkFields.is_active;
 
@@ -371,11 +377,13 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
 
     const payload: {
       section_type?: string;
+      category?: string;
       difficulty?: 'EASY' | 'MEDIUM' | 'HARD';
       is_active?: boolean;
     } = {};
 
     if (bulkFields.section_type) payload.section_type = bulkValues.section_type;
+    if (bulkFields.category) payload.category = bulkValues.category;
     if (bulkFields.difficulty) payload.difficulty = bulkValues.difficulty;
     if (bulkFields.is_active) payload.is_active = bulkValues.is_active;
 
@@ -1210,11 +1218,18 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                         {selectedAssessment.sections.reduce((acc, s) => acc + (s.question_count || 0), 0)}
                       </strong>)
                     </>
+                  ) : (selectedAssessment.aptitude_count > 0 || selectedAssessment.coding_count > 0) ? (
+                    <>
+                      Exam Requirement:{' '}
+                      {selectedAssessment.aptitude_count > 0 && <strong>{selectedAssessment.aptitude_count} Aptitude</strong>}
+                      {selectedAssessment.aptitude_count > 0 && selectedAssessment.coding_count > 0 && ' + '}
+                      {selectedAssessment.coding_count > 0 && <strong>{selectedAssessment.coding_count} Coding</strong>}
+                      {' '}questions (Total:{' '}
+                      <strong>{selectedAssessment.aptitude_count + selectedAssessment.coding_count}</strong>)
+                    </>
                   ) : (
                     <>
-                      Exam Requirement: <strong>{selectedAssessment.aptitude_count} Aptitude</strong> +{' '}
-                      <strong>{selectedAssessment.coding_count} Coding</strong> questions (Total:{' '}
-                      <strong>{selectedAssessment.aptitude_count + selectedAssessment.coding_count}</strong>)
+                      Exam Requirement: <strong>No section requirements configured</strong>
                     </>
                   )}
                 </div>
@@ -1243,11 +1258,13 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                         })}{' '}
                         ({questions.length} total)
                       </>
-                    ) : (
+                    ) : (selectedAssessment.aptitude_count > 0 || selectedAssessment.coding_count > 0) ? (
                       <>
                         {questions.filter((q) => q.section_type === 'APTITUDE').length} Aptitude /{' '}
                         {questions.filter((q) => q.section_type === 'CODING').length} Coding ({questions.length} total)
                       </>
+                    ) : (
+                      <>{questions.length} total</>
                     )}
                   </div>
                 </div>
@@ -1280,7 +1297,9 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                         })
                         .filter(Boolean)
                         .join(', ') || 'Check Pool'})`
-                    : `⚠ Shortage (${Math.max(0, selectedAssessment.aptitude_count - questions.filter((q) => q.section_type === 'APTITUDE').length)} Apt, ${Math.max(0, selectedAssessment.coding_count - questions.filter((q) => q.section_type === 'CODING').length)} Cod)`}
+                    : (selectedAssessment.aptitude_count > 0 || selectedAssessment.coding_count > 0)
+                    ? `⚠ Shortage (${Math.max(0, selectedAssessment.aptitude_count - questions.filter((q) => q.section_type === 'APTITUDE').length)} Apt, ${Math.max(0, selectedAssessment.coding_count - questions.filter((q) => q.section_type === 'CODING').length)} Cod)`
+                    : '⚠ Shortage (No questions)'}
                 </div>
               </div>
             </div>
@@ -1508,7 +1527,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
 
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
             <button
-              onClick={openBulkModal}
+              onClick={() => openBulkModal('section_type')}
               disabled={bulkUpdating}
               style={{
                 padding: '7px 14px',
@@ -1532,7 +1551,7 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
             </button>
 
             <button
-              onClick={openBulkModal}
+              onClick={() => openBulkModal('difficulty')}
               disabled={bulkUpdating}
               style={{
                 padding: '7px 14px',
@@ -1690,8 +1709,59 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
               </tr>
             ) : paginatedQuestions.length === 0 ? (
               <tr>
-                <td colSpan={8} style={{ padding: '36px', textAlign: 'center', color: '#6B7280' }}>
-                  No questions found matching your filter criteria.
+                <td colSpan={8} style={{ padding: '48px 24px', textAlign: 'center' }}>
+                  <div style={{ maxWidth: '420px', margin: '0 auto', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px' }}>
+                    <div style={{ width: '48px', height: '48px', borderRadius: '50%', backgroundColor: '#EFF6FF', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#1455B8' }}>
+                      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <circle cx="12" cy="12" r="10"></circle>
+                        <line x1="12" y1="8" x2="12" y2="12"></line>
+                        <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                      </svg>
+                    </div>
+                    <div style={{ fontSize: '15px', fontWeight: 700, color: '#0F172A' }}>
+                      {selectedAssessment ? `No questions in "${selectedAssessment.title}" pool` : 'No questions found'}
+                    </div>
+                    <p style={{ fontSize: '13px', color: '#64748B', margin: 0, lineHeight: 1.5 }}>
+                      {selectedAssessment
+                        ? 'This assessment pool is currently empty. Add individual questions or import questions in bulk via CSV to satisfy section quotas.'
+                        : 'No questions match the current filter criteria or the question bank is empty.'}
+                    </p>
+                    <div style={{ display: 'flex', gap: '10px', marginTop: '6px' }}>
+                      <button
+                        onClick={openCreateModal}
+                        style={{
+                          padding: '8px 16px',
+                          backgroundColor: '#1455B8',
+                          color: '#FFFFFF',
+                          border: 'none',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        + Add Question
+                      </button>
+                      <button
+                        onClick={() => {
+                          if (selectedAssessment) setImportAssessmentId(selectedAssessment.id);
+                          setShowImportModal(true);
+                        }}
+                        style={{
+                          padding: '8px 16px',
+                          backgroundColor: '#FFFFFF',
+                          color: '#0B2E6F',
+                          border: '1px solid #CBD5E1',
+                          borderRadius: '8px',
+                          fontSize: '13px',
+                          fontWeight: 600,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        Import CSV
+                      </button>
+                    </div>
+                  </div>
                 </td>
               </tr>
             ) : (
@@ -2098,9 +2168,43 @@ export function AdminQuestionsView({ initialAssessmentId }: AdminQuestionsViewPr
                 </select>
               </div>
 
-
-
-              {/* Field 3: Difficulty */}
+              {/* Field 2: Category */}
+              <div
+                style={{
+                  padding: '12px 14px',
+                  borderRadius: '10px',
+                  border: `1.5px solid ${bulkFields.category ? '#1455B8' : '#E2E8F0'}`,
+                  backgroundColor: bulkFields.category ? 'rgba(20, 85, 184, 0.03)' : '#FAF7F3',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '8px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', fontWeight: 700, color: '#0B2E6F', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={bulkFields.category}
+                      onChange={(e) => setBulkFields({ ...bulkFields, category: e.target.checked })}
+                      style={{ width: '16px', height: '16px', accentColor: '#1455B8' }}
+                    />
+                    <span>Update Category / Sub-topic</span>
+                  </label>
+                </div>
+                <input
+                  type="text"
+                  placeholder="e.g. Quantitative Ability, Data Structures, General"
+                  disabled={!bulkFields.category}
+                  value={bulkValues.category}
+                  onChange={(e) => setBulkValues({ ...bulkValues, category: e.target.value })}
+                  style={{
+                    width: '100%',
+                    padding: '8px 10px',
+                    borderRadius: '6px',
+                    border: '1px solid #CBD5E1',
+                    fontSize: '13px',
+                    backgroundColor: bulkFields.category ? '#FFFFFF' : '#F1F5F9',
+                    boxSizing: 'border-box',
+                  }}
+                />
+              </div>
               <div
                 style={{
                   padding: '12px 14px',

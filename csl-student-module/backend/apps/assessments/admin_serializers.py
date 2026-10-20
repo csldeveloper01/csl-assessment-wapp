@@ -251,24 +251,29 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
             if allocs.exists():
                 for alloc in allocs:
                     sec = alloc.section
+                    sec_filter = (
+                        Q(section=sec)
+                        | Q(section_type__iexact=sec.code)
+                        | Q(section_type__iexact=sec.name)
+                        | Q(section__code__iexact=sec.code)
+                        | Q(section__name__iexact=sec.name)
+                    )
                     if obj.questions.exists():
-                        cnt = obj.questions.filter(
-                            Q(section=sec) | Q(section_type__iexact=sec.code) | Q(section__code__iexact=sec.code),
-                            is_active=True,
-                        ).count()
+                        cnt = obj.questions.filter(sec_filter, is_active=True).distinct().count()
                     else:
-                        cnt = QuestionBank.objects.filter(
-                            Q(section=sec) | Q(section_type__iexact=sec.code) | Q(section__code__iexact=sec.code),
-                            is_active=True,
-                        ).count()
+                        cnt = QuestionBank.objects.filter(sec_filter, is_active=True).distinct().count()
                     if cnt < alloc.question_count:
                         return False
                 return True
         except Exception:
             pass
+        apt_req = obj.aptitude_count or 0
+        cod_req = obj.coding_count or 0
+        if apt_req == 0 and cod_req == 0:
+            return False
         apt = self.get_pool_aptitude_count(obj)
         cod = self.get_pool_coding_count(obj)
-        return (apt >= (obj.aptitude_count or 0)) and (cod >= (obj.coding_count or 0))
+        return (apt >= apt_req) and (cod >= cod_req)
 
     def get_eligible_colleges(self, obj):
         return [{"id": c.id, "name": c.name, "code": c.code} for c in obj.eligible_colleges.all()]
@@ -452,16 +457,11 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
         # Remove associations only (without deleting the reusable section!)
         assessment.section_allocations.exclude(section_id__in=seen_section_ids).delete()
 
-        # Update legacy aptitude_count and coding_count fields if relevant
-        update_fields = []
-        if apt_count:
-            assessment.aptitude_count = apt_count
-            update_fields.append("aptitude_count")
-        if cod_count:
-            assessment.coding_count = cod_count
-            update_fields.append("coding_count")
-        if update_fields:
-            assessment.save(update_fields=update_fields)
+        # Update legacy aptitude_count and coding_count fields to reflect current allocations
+        assessment.aptitude_count = apt_count
+        assessment.coding_count = cod_count
+        assessment.save(update_fields=["aptitude_count", "coding_count"])
+
 
 
 class AdminAssessmentDetailSerializer(AdminAssessmentListSerializer):
@@ -783,9 +783,20 @@ class AdminLiveAttemptSerializer(serializers.ModelSerializer):
         return obj.question_snapshots.exclude(selected_option="").count()
 
     def get_total_questions(self, obj):
+        if hasattr(obj, "_prefetched_objects_cache") and "question_snapshots" in obj._prefetched_objects_cache:
+            count = len(obj.question_snapshots.all())
+            if count:
+                return count
+        elif obj.pk:
+            count = obj.question_snapshots.count()
+            if count:
+                return count
         if obj.assessment:
-            return obj.assessment.total_marks
-        return obj.question_snapshots.count() or 50
+            allocs = obj.assessment.section_allocations.all()
+            if allocs.exists():
+                return sum(a.question_count for a in allocs)
+            return (obj.assessment.aptitude_count or 0) + (obj.assessment.coding_count or 0)
+        return 50
 
     def get_integrity_events_count(self, obj):
         return obj.integrity_events.count()
@@ -873,8 +884,8 @@ class AdminQuestionBulkUpdateSerializer(serializers.Serializer):
         allow_empty=False,
         help_text="List of question IDs to update",
     )
-    section_type = serializers.ChoiceField(
-        choices=QuestionBank.SectionType.choices,
+    section_type = serializers.CharField(
+        max_length=50,
         required=False,
     )
     category = serializers.CharField(
@@ -895,7 +906,7 @@ class AdminQuestionBulkUpdateSerializer(serializers.Serializer):
         update_fields = [k for k in ["section_type", "difficulty", "is_active", "category"] if k in data]
         if not update_fields:
             raise serializers.ValidationError(
-                "At least one update field (section_type, difficulty, or is_active) must be specified."
+                "At least one update field (section_type, difficulty, is_active, or category) must be specified."
             )
         return data
 
@@ -946,9 +957,20 @@ class AdminAttemptReviewSerializer(serializers.ModelSerializer):
         return "CSL-INITIAL-01"
 
     def get_total_questions(self, obj):
+        if hasattr(obj, "_prefetched_objects_cache") and "question_snapshots" in obj._prefetched_objects_cache:
+            count = len(obj.question_snapshots.all())
+            if count:
+                return count
+        elif obj.pk:
+            count = obj.question_snapshots.count()
+            if count:
+                return count
         if obj.assessment:
-            return obj.assessment.total_marks
-        return obj.question_snapshots.count()
+            allocs = obj.assessment.section_allocations.all()
+            if allocs.exists():
+                return sum(a.question_count for a in allocs)
+            return (obj.assessment.aptitude_count or 0) + (obj.assessment.coding_count or 0)
+        return 0
 
     def get_answered_count(self, obj):
         return obj.question_snapshots.exclude(selected_option="").count()

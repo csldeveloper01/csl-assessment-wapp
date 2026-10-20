@@ -182,35 +182,6 @@ export function AdminOverviewView({ onNavigateTab }: AdminOverviewViewProps) {
       bg: stats.flagged_count > 0 ? '#FEF2F2' : '#F0FDF4',
       tab: 'integrity',
     },
-    {
-      title: 'Aptitude Questions',
-      value: stats.aptitude_questions_count,
-      subtext: 'Active quantitative & logical pool',
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <circle cx="12" cy="12" r="10"></circle>
-          <circle cx="12" cy="12" r="6"></circle>
-          <circle cx="12" cy="12" r="2"></circle>
-        </svg>
-      ),
-      color: '#1455B8',
-      bg: '#EFF6FF',
-      tab: 'questions',
-    },
-    {
-      title: 'Coding Questions',
-      value: stats.coding_questions_count,
-      subtext: 'Active fundamentals & syntax pool',
-      icon: (
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="16 18 22 12 16 6"></polyline>
-          <polyline points="8 6 2 12 8 18"></polyline>
-        </svg>
-      ),
-      color: '#059669',
-      bg: '#ECFDF5',
-      tab: 'questions',
-    },
   ];
 
   return (
@@ -364,7 +335,7 @@ export function AdminOverviewView({ onNavigateTab }: AdminOverviewViewProps) {
 
           <p style={{ fontSize: '13px', color: '#64748B', lineHeight: 1.6, margin: '0 0 18px 0' }}>
             Total questions in bank: <strong style={{ color: '#0F172A' }}>{stats.total_questions_count}</strong>.
-            The randomized assessment engine samples 25 Aptitude and 25 Coding questions for each candidate session.
+            The randomized assessment engine samples questions dynamically according to each assessment's configured sections.
             Ensure adequate pool diversity across difficulty tiers.
           </p>
 

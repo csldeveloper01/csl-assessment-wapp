@@ -665,17 +665,25 @@ export function AssessmentInstructionsPage() {
                   </strong>
                 </li>
               ))
-            ) : (
+            ) : (aptitudeCount > 0 || codingCount > 0) ? (
               <>
-                <li>
-                  <strong>Section 1: General Aptitude ({aptitudeCount} Questions)</strong> — Quantitative Problem
-                  Solving, Logical Reasoning, and Verbal Comprehension.
-                </li>
-                <li>
-                  <strong>Section 2: Coding Fundamentals ({codingCount} Questions)</strong> — Core Programming
-                  Principles, Control Flow, Functions, OOP Concepts, and Data Structures.
-                </li>
+                {aptitudeCount > 0 && (
+                  <li>
+                    <strong>Section 1: General Aptitude ({aptitudeCount} Questions)</strong> — Quantitative Problem
+                    Solving, Logical Reasoning, and Verbal Comprehension.
+                  </li>
+                )}
+                {codingCount > 0 && (
+                  <li>
+                    <strong>Section 2: Coding Fundamentals ({codingCount} Questions)</strong> — Core Programming
+                    Principles, Control Flow, Functions, OOP Concepts, and Data Structures.
+                  </li>
+                )}
               </>
+            ) : (
+              <li>
+                <strong>Comprehensive Assessment ({totalQuestions} Questions)</strong> — Questions configured for this assessment.
+              </li>
             )}
             <li>
               Each correct question is awarded <strong>1 mark</strong>. There is no negative marking

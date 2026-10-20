@@ -14,12 +14,30 @@ Including another URLconf
     1. Import the include() function: from django.urls import include, path
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
+from django.conf import settings
 from django.contrib import admin
 from django.urls import path, include
 
 admin.site.site_header = "CSL Skill Matrix Administration"
 admin.site.site_title = "CSL Admin Portal"
 admin.site.index_title = "CSL Operational Dashboard"
+
+def custom_admin_has_permission(request):
+    user = request.user
+    if not (user and user.is_authenticated):
+        return False
+    if not user.is_active:
+        return False
+    if not (user.is_staff or user.is_superuser):
+        return False
+    if getattr(user, "status", None) != "ACTIVE":
+        return False
+    if getattr(user, "role", None) == "STUDENT":
+        return False
+    return True
+
+admin.site.has_permission = custom_admin_has_permission
+
 
 _orig_admin_index = admin.site.index
 
@@ -89,11 +107,14 @@ def health_check(request):
 
 urlpatterns = [
     path('health/', health_check, name='health-check'),
-    path('admin/', admin.site.urls),
     path('api/auth/', include('apps.auth_api.urls')),
     path('api/student/', include('apps.users.urls')),
     path('api/student/activities/', include('apps.activities.urls')),
     path('api/assessment/', include('apps.assessments.urls')),
     path('api/csl-admin/', include('apps.assessments.admin_urls')),
 ]
+
+if getattr(settings, "DJANGO_ADMIN_ENABLED", True):
+    urlpatterns.insert(1, path('admin/', admin.site.urls))
+
 

@@ -109,6 +109,8 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
     )
 
     if allocations:
+        if sum(alloc.question_count for alloc in allocations) <= 0:
+            raise ValidationError({"bank_error": "Assessment has no configured sections or questions."})
         for alloc in allocations:
             sec = alloc.section
             needed = alloc.question_count
@@ -117,6 +119,9 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
             sec_q_filter = (
                 models.Q(section=sec)
                 | models.Q(section_type__iexact=sec.code)
+                | models.Q(section_type__iexact=sec.name)
+                | models.Q(section__code__iexact=sec.code)
+                | models.Q(section__name__iexact=sec.name)
             )
             if has_assessment_questions:
                 available = assessment.questions.filter(sec_q_filter, is_active=True).distinct().count()
@@ -131,6 +136,8 @@ def validate_question_bank_sufficiency(aptitude_count: int = None, coding_count:
     else:
         apt_count = aptitude_count if aptitude_count is not None else (assessment.aptitude_count if assessment else 25)
         cod_count = coding_count if coding_count is not None else (assessment.coding_count if assessment else 25)
+        if apt_count == 0 and cod_count == 0:
+            raise ValidationError({"bank_error": "Assessment has no configured sections or questions."})
 
         apt_filter = (
             models.Q(section_type__iexact=QuestionBank.SectionType.APTITUDE)
@@ -203,12 +210,17 @@ def select_balanced_questions(
         q_filter = (
             models.Q(section=sec)
             | models.Q(section_type__iexact=sec_code)
+            | models.Q(section_type__iexact=sec_name)
+            | models.Q(section__code__iexact=sec_code)
+            | models.Q(section__name__iexact=sec_name)
         )
     else:
         q_filter = (
             models.Q(section_type__iexact=sec_code)
+            | models.Q(section_type__iexact=sec_name)
             | models.Q(section__code__iexact=sec_code)
             | models.Q(section__name__iexact=sec_code)
+            | models.Q(section__name__iexact=sec_name)
         )
 
     if has_pool_questions is None:
@@ -781,6 +793,8 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
 
     if allocations:
         total_required = sum(alloc.question_count for alloc in allocations)
+        if total_required <= 0:
+            raise ValidationError({"detail": "Assessment has no configured sections or questions."})
         order_counter = 1
         for alloc in allocations:
             sec_questions = select_balanced_questions(
@@ -799,6 +813,8 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
         apt_count = assessment.aptitude_count if assessment else config.aptitude_count
         cod_count = assessment.coding_count if assessment else config.coding_count
         total_required = apt_count + cod_count
+        if total_required <= 0:
+            raise ValidationError({"detail": "Assessment has no configured sections or questions."})
 
         selected_aptitude = select_balanced_questions(
             QuestionBank.SectionType.APTITUDE,
@@ -1035,7 +1051,8 @@ def finalize_assessment_attempt(attempt_or_id, final_state=AssessmentAttempt.Sta
     try:
         if locked_attempt.assessment_id:
             for alloc in locked_attempt.assessment.section_allocations.select_related("section").all():
-                marks_map[alloc.section.code] = alloc.marks_per_question
+                marks_map[alloc.section.code.upper()] = alloc.marks_per_question
+                marks_map[alloc.section.name.upper()] = alloc.marks_per_question
     except Exception:
         marks_map = {}
 
@@ -1048,11 +1065,12 @@ def finalize_assessment_attempt(attempt_or_id, final_state=AssessmentAttempt.Sta
     for s in snapshots:
         if s.selected_option and s.selected_option == s.correct_option_key:
             s.is_correct = True
-            q_marks = marks_map.get(s.section_type, 1)
+            sec_key = (s.section_type or "").upper()
+            q_marks = marks_map.get(sec_key, 1)
             total_score += q_marks
-            if s.section_type == QuestionBank.SectionType.APTITUDE:
+            if sec_key in ("APTITUDE",):
                 aptitude_score += q_marks
-            elif s.section_type == QuestionBank.SectionType.CODING:
+            elif sec_key in ("CODING",):
                 coding_score += q_marks
         else:
             s.is_correct = False

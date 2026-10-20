@@ -770,7 +770,7 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
                           {att.state}
                         </span>
                         <strong style={{ fontSize: '14px', color: '#0B2E6F' }}>
-                          Score: {att.total_score} / 50 ({att.percentage}%)
+                          Score: {att.total_score}{att.total_questions ? ` / ${att.total_questions}` : ''} ({att.percentage}%)
                         </strong>
                         {att.is_flagged && (
                           <span
@@ -795,7 +795,7 @@ export function AdminCandidatesView({ onReviewAttempt }: AdminCandidatesViewProp
                         )}
                       </div>
                       <div style={{ fontSize: '12px', color: '#64748B', marginTop: '4px' }}>
-                        Aptitude: {att.aptitude_score}/25 • Coding: {att.coding_score}/25 • Tab Switches: {att.tab_switch_count}
+                        Total Marks: {att.total_score} • Percentage: {att.percentage}% • Tab Switches: {att.tab_switch_count}
                       </div>
                     </div>
 

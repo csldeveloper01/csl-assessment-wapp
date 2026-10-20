@@ -17,7 +17,7 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
   const [review, setReview] = useState<AdminAttemptReview | null>(null);
   const [loading, setLoading] = useState(true);
   const [deletingAttempt, setDeletingAttempt] = useState(false);
-  const [sectionFilter, setSectionFilter] = useState<'ALL' | 'APTITUDE' | 'CODING'>('ALL');
+  const [sectionFilter, setSectionFilter] = useState<string>('ALL');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'CORRECT' | 'INCORRECT' | 'UNANSWERED'>('ALL');
 
   // Flag action modal
@@ -174,6 +174,8 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
       </div>
     );
   }
+
+  const sections = review ? Array.from(new Set(review.questions.map((q) => q.section_type).filter(Boolean))) : [];
 
   const filteredQuestions = review.questions.filter((q) => {
     if (sectionFilter !== 'ALL' && q.section_type !== sectionFilter) return false;
@@ -366,46 +368,76 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
                 Total Score
               </div>
               <div style={{ fontSize: '26px', fontWeight: 800, color: '#0B2E6F', margin: '2px 0' }}>
-                {review.total_score} <span style={{ fontSize: '14px', color: '#94A3B8' }}>/ 50</span>
+                {review.total_score} <span style={{ fontSize: '14px', color: '#94A3B8' }}>/ {review.total_questions || review.questions.length}</span>
               </div>
               <div style={{ fontSize: '12px', color: '#16A34A', fontWeight: 800 }}>{review.percentage}%</div>
             </div>
 
-            <div
-              style={{
-                backgroundColor: '#FAF7F3',
-                padding: '14px 20px',
-                borderRadius: '12px',
-                border: '1px solid #E2E8F0',
-                minWidth: '100px',
-              }}
-            >
-              <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 800, textTransform: 'uppercase' }}>
-                Aptitude
-              </div>
-              <div style={{ fontSize: '22px', fontWeight: 800, color: '#1455B8', margin: '2px 0' }}>
-                {review.aptitude_score} <span style={{ fontSize: '13px', color: '#94A3B8' }}>/ 25</span>
-              </div>
-              <div style={{ fontSize: '11px', color: '#64748B' }}>Section 1</div>
-            </div>
+            {/* Dynamic Section Score Cards */}
+            {sections.length > 0 ? (
+              sections.map((sec, idx) => {
+                const secQuestions = review.questions.filter((q) => q.section_type === sec);
+                const secCorrect = secQuestions.filter((q) => q.is_correct === true).length;
+                return (
+                  <div
+                    key={sec}
+                    style={{
+                      backgroundColor: '#FAF7F3',
+                      padding: '14px 20px',
+                      borderRadius: '12px',
+                      border: '1px solid #E2E8F0',
+                      minWidth: '100px',
+                    }}
+                  >
+                    <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 800, textTransform: 'uppercase' }}>
+                      {sec}
+                    </div>
+                    <div style={{ fontSize: '22px', fontWeight: 800, color: idx % 2 === 0 ? '#1455B8' : '#059669', margin: '2px 0' }}>
+                      {secCorrect} <span style={{ fontSize: '13px', color: '#94A3B8' }}>/ {secQuestions.length}</span>
+                    </div>
+                    <div style={{ fontSize: '11px', color: '#64748B' }}>Section {idx + 1}</div>
+                  </div>
+                );
+              })
+            ) : (review.aptitude_score !== undefined || review.coding_score !== undefined) ? (
+              <>
+                <div
+                  style={{
+                    backgroundColor: '#FAF7F3',
+                    padding: '14px 20px',
+                    borderRadius: '12px',
+                    border: '1px solid #E2E8F0',
+                    minWidth: '100px',
+                  }}
+                >
+                  <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 800, textTransform: 'uppercase' }}>
+                    Aptitude
+                  </div>
+                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#1455B8', margin: '2px 0' }}>
+                    {review.aptitude_score}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748B' }}>Section 1</div>
+                </div>
 
-            <div
-              style={{
-                backgroundColor: '#FAF7F3',
-                padding: '14px 20px',
-                borderRadius: '12px',
-                border: '1px solid #E2E8F0',
-                minWidth: '100px',
-              }}
-            >
-              <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 800, textTransform: 'uppercase' }}>
-                Coding
-              </div>
-              <div style={{ fontSize: '22px', fontWeight: 800, color: '#059669', margin: '2px 0' }}>
-                {review.coding_score} <span style={{ fontSize: '13px', color: '#94A3B8' }}>/ 25</span>
-              </div>
-              <div style={{ fontSize: '11px', color: '#64748B' }}>Section 2</div>
-            </div>
+                <div
+                  style={{
+                    backgroundColor: '#FAF7F3',
+                    padding: '14px 20px',
+                    borderRadius: '12px',
+                    border: '1px solid #E2E8F0',
+                    minWidth: '100px',
+                  }}
+                >
+                  <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 800, textTransform: 'uppercase' }}>
+                    Coding
+                  </div>
+                  <div style={{ fontSize: '22px', fontWeight: 800, color: '#059669', margin: '2px 0' }}>
+                    {review.coding_score}
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#64748B' }}>Section 2</div>
+                </div>
+              </>
+            ) : null}
           </div>
         </div>
 
@@ -592,7 +624,7 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
           gap: '12px',
         }}
       >
-        <div style={{ display: 'flex', gap: '8px' }}>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
           <button
             onClick={() => setSectionFilter('ALL')}
             style={{
@@ -606,38 +638,65 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
               cursor: 'pointer',
             }}
           >
-            All 50 Questions
+            All Questions ({review.questions.length})
           </button>
-          <button
-            onClick={() => setSectionFilter('APTITUDE')}
-            style={{
-              padding: '6px 14px',
-              borderRadius: '8px',
-              border: sectionFilter === 'APTITUDE' ? 'none' : '1px solid #CBD5E1',
-              backgroundColor: sectionFilter === 'APTITUDE' ? '#1455B8' : '#FFFFFF',
-              color: sectionFilter === 'APTITUDE' ? '#FFFFFF' : '#475569',
-              fontSize: '12px',
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            Aptitude (25)
-          </button>
-          <button
-            onClick={() => setSectionFilter('CODING')}
-            style={{
-              padding: '6px 14px',
-              borderRadius: '8px',
-              border: sectionFilter === 'CODING' ? 'none' : '1px solid #CBD5E1',
-              backgroundColor: sectionFilter === 'CODING' ? '#059669' : '#FFFFFF',
-              color: sectionFilter === 'CODING' ? '#FFFFFF' : '#475569',
-              fontSize: '12px',
-              fontWeight: 700,
-              cursor: 'pointer',
-            }}
-          >
-            Coding (25)
-          </button>
+          {sections.length > 0 ? (
+            sections.map((sec, idx) => {
+              const count = review.questions.filter((q) => q.section_type === sec).length;
+              const isSelected = sectionFilter === sec;
+              return (
+                <button
+                  key={sec}
+                  onClick={() => setSectionFilter(sec)}
+                  style={{
+                    padding: '6px 14px',
+                    borderRadius: '8px',
+                    border: isSelected ? 'none' : '1px solid #CBD5E1',
+                    backgroundColor: isSelected ? (idx % 2 === 0 ? '#1455B8' : '#059669') : '#FFFFFF',
+                    color: isSelected ? '#FFFFFF' : '#475569',
+                    fontSize: '12px',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {sec} ({count})
+                </button>
+              );
+            })
+          ) : (
+            <>
+              <button
+                onClick={() => setSectionFilter('APTITUDE')}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '8px',
+                  border: sectionFilter === 'APTITUDE' ? 'none' : '1px solid #CBD5E1',
+                  backgroundColor: sectionFilter === 'APTITUDE' ? '#1455B8' : '#FFFFFF',
+                  color: sectionFilter === 'APTITUDE' ? '#FFFFFF' : '#475569',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Aptitude
+              </button>
+              <button
+                onClick={() => setSectionFilter('CODING')}
+                style={{
+                  padding: '6px 14px',
+                  borderRadius: '8px',
+                  border: sectionFilter === 'CODING' ? 'none' : '1px solid #CBD5E1',
+                  backgroundColor: sectionFilter === 'CODING' ? '#059669' : '#FFFFFF',
+                  color: sectionFilter === 'CODING' ? '#FFFFFF' : '#475569',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Coding
+              </button>
+            </>
+          )}
         </div>
 
         <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
