@@ -251,7 +251,8 @@ export function AssessmentExamPage() {
 
   // Load PDF for PDF Coding assessments
   useEffect(() => {
-    if (!attemptId || attempt?.delivery_mode !== 'PDF_CODING') return;
+    const isPdf = attempt?.delivery_mode === 'PDF_CODING' || Boolean(attempt?.has_pdf);
+    if (!attemptId || !isPdf) return;
     let isMounted = true;
     let currentUrl: string | null = null;
     setPdfLoading(true);
@@ -287,7 +288,7 @@ export function AssessmentExamPage() {
       isMounted = false;
       if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
-  }, [attemptId, attempt?.delivery_mode]);
+  }, [attemptId, attempt?.delivery_mode, attempt?.has_pdf]);
 
   // Keep active section tab synchronized with current question section
   useEffect(() => {
@@ -659,7 +660,10 @@ export function AssessmentExamPage() {
     );
   }
 
-  const isPdfCoding = attempt?.delivery_mode === 'PDF_CODING';
+  const isPdfCoding =
+    attempt?.delivery_mode === 'PDF_CODING' ||
+    String(attempt?.delivery_mode).toUpperCase() === 'PDF_CODING' ||
+    Boolean(attempt?.has_pdf);
 
   if (error || !attempt || (!isPdfCoding && (!attempt.questions || attempt.questions.length === 0))) {
     return (
@@ -1127,7 +1131,7 @@ export function AssessmentExamPage() {
       )}
 
       {/* ─── 2. MAIN WORKSPACE (PDF CODING OR 3-COLUMN MCQ) ─────────── */}
-      {attempt?.delivery_mode === 'PDF_CODING' ? (
+      {isPdfCoding ? (
         <div
           style={{
             flex: 1,
@@ -2214,7 +2218,7 @@ export function AssessmentExamPage() {
             >
               Confirm Final Submission
             </h3>
-            {attempt?.delivery_mode === 'PDF_CODING' ? (
+            {isPdfCoding ? (
               <>
                 <p
                   style={{

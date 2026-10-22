@@ -927,7 +927,14 @@ class CandidateAttemptPdfDownloadView(APIView):
                 status=status.HTTP_403_FORBIDDEN,
             )
 
-        if not attempt.assessment or attempt.assessment.delivery_mode != Assessment.DeliveryMode.PDF_CODING:
+        is_pdf_mode = (
+            attempt.assessment
+            and (
+                attempt.assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING
+                or (hasattr(attempt.assessment, "pdf_document") and bool(attempt.assessment.pdf_document))
+            )
+        )
+        if not is_pdf_mode:
             return Response(
                 {"detail": "PDF question paper is only available for PDF Coding Assessments."},
                 status=status.HTTP_400_BAD_REQUEST,

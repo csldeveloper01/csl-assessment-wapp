@@ -387,7 +387,10 @@ export function AssessmentInstructionsPage() {
   const maxAttempts = selectedAssessment?.max_attempts ?? 1;
   const assessmentTitle = selectedAssessment?.title ?? 'Initial Diagnostic Assessment';
   const assessmentCode = selectedAssessment?.code ?? 'CSL-INITIAL-01';
-  const isPdfCoding = selectedAssessment?.delivery_mode === 'PDF_CODING';
+  const isPdfCoding =
+    selectedAssessment?.delivery_mode === 'PDF_CODING' ||
+    String(selectedAssessment?.delivery_mode).toUpperCase() === 'PDF_CODING' ||
+    Boolean(selectedAssessment?.has_pdf);
 
   // Screen 3: Standard Instructions Screen (CSL Brand Aligned)
   return (

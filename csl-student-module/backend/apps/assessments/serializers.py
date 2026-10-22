@@ -524,9 +524,33 @@ class StudentCandidateAssessmentSerializer(serializers.ModelSerializer):
             "latest_attempt_score",
             "sections",
             "delivery_mode",
+            "has_pdf",
+            "pdf_filename",
         ]
 
-    delivery_mode = serializers.CharField(read_only=True)
+    delivery_mode = serializers.SerializerMethodField()
+    has_pdf = serializers.SerializerMethodField()
+    pdf_filename = serializers.SerializerMethodField()
+
+    def get_delivery_mode(self, obj):
+        return obj.delivery_mode or "MCQ"
+
+    def get_has_pdf(self, obj):
+        if obj.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+            try:
+                return hasattr(obj, "pdf_document") and bool(obj.pdf_document)
+            except Exception:
+                return False
+        return False
+
+    def get_pdf_filename(self, obj):
+        if obj.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+            try:
+                if hasattr(obj, "pdf_document") and obj.pdf_document:
+                    return obj.pdf_document.original_filename
+            except Exception:
+                return None
+        return None
 
     def get_is_open(self, obj):
         return obj.is_currently_open()
