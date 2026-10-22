@@ -671,3 +671,45 @@ class PdfCodingAssessmentModeTests(TestCase):
             del_kwargs = mock_s3.delete_object.call_args[1]
             self.assertEqual(del_kwargs["Bucket"], "test-del-bucket")
             self.assertEqual(del_kwargs["Key"], "assessments/DEL-PDF-01/delete_me.pdf")
+
+    def test_candidate_attempt_state_endpoint_returns_pdf_metadata_and_zero_questions(self):
+        """
+        Validates that GET /api/assessment/attempts/<id>/ accurately reports:
+        1. delivery_mode == 'PDF_CODING'
+        2. questions == [] (no MCQs)
+        3. has_pdf == True and pdf_filename
+        4. Valid server-derived timer remaining_seconds
+        """
+        assessment, _ = self._setup_open_pdf_assessment()
+        attempt = start_assessment_for_candidate(self.candidate, assessment=assessment)
+        token = generate_candidate_token(self.candidate.id, attempt_id=attempt.id)
+
+        res = self.client.get(
+            f"/api/assessment/attempts/{attempt.id}/",
+            HTTP_AUTHORIZATION=f"Bearer {token}",
+        )
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["delivery_mode"], "PDF_CODING")
+        self.assertEqual(res.data["questions"], [])
+        self.assertTrue(res.data["has_pdf"])
+        self.assertEqual(res.data["pdf_filename"], "live_challenge.pdf")
+        self.assertGreater(res.data["remaining_seconds"], 0)
+
+    def test_candidate_attempt_with_inaccessible_pdf_file_returns_clear_error(self):
+        """
+        When a question paper PDF object is missing or inaccessible in storage,
+        the candidate endpoint returns an explicit, non-silent error message.
+        """
+        assessment, pdf_doc = self._setup_open_pdf_assessment()
+        attempt = start_assessment_for_candidate(self.candidate, assessment=assessment)
+        token = generate_candidate_token(self.candidate.id, attempt_id=attempt.id)
+
+        # Simulate inaccessible file in storage
+        from unittest.mock import patch
+        with patch.object(AssessmentPdfDocument, "get_file_bytes", return_value=b""):
+            res = self.client.get(
+                f"/api/assessment/attempts/{attempt.id}/pdf/",
+                HTTP_AUTHORIZATION=f"Bearer {token}",
+            )
+            self.assertEqual(res.status_code, 500)
+            self.assertIn("could not be retrieved from storage", res.data["detail"])

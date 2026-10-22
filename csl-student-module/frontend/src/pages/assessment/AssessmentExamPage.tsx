@@ -175,7 +175,8 @@ export function AssessmentExamPage() {
       if (
         data.state === 'SUBMITTED' ||
         data.state === 'TIMED_OUT' ||
-        data.state === 'FLAGGED_FOR_REVIEW'
+        data.state === 'FLAGGED_FOR_REVIEW' ||
+        data.state === 'COMPLETED_PENDING_MANUAL_EVALUATION'
       ) {
         navigate(`/assessment/results/${data.id}`, { replace: true });
         return;
@@ -192,7 +193,7 @@ export function AssessmentExamPage() {
       // Hydrate answers and save states
       const initialAns: Record<number, string> = {};
       const initialSave: Record<number, 'saved' | 'saving' | 'failed'> = {};
-      data.questions.forEach((q) => {
+      (data.questions || []).forEach((q) => {
         if (q.selected_option && q.selected_option.trim()) {
           initialAns[q.question_order] = q.selected_option;
           initialSave[q.question_order] = 'saved';
@@ -262,12 +263,21 @@ export function AssessmentExamPage() {
         currentUrl = URL.createObjectURL(blob);
         setPdfBlobUrl(currentUrl);
       })
-      .catch((err: any) => {
+      .catch(async (err: any) => {
         if (!isMounted) return;
-        setPdfError(
-          err?.response?.data?.detail ||
-            'Unable to load assessment question paper PDF. Please notify your test invigilator.'
-        );
+        let msg = 'Unable to load assessment question paper PDF. Please notify your test invigilator.';
+        if (err?.response?.data instanceof Blob) {
+          try {
+            const text = await err.response.data.text();
+            const parsed = JSON.parse(text);
+            if (parsed.detail) msg = parsed.detail;
+          } catch {
+            // retain fallback
+          }
+        } else if (err?.response?.data?.detail) {
+          msg = err.response.data.detail;
+        }
+        setPdfError(msg);
       })
       .finally(() => {
         if (isMounted) setPdfLoading(false);
@@ -649,7 +659,9 @@ export function AssessmentExamPage() {
     );
   }
 
-  if (error || !attempt || !attempt.questions || attempt.questions.length === 0) {
+  const isPdfCoding = attempt?.delivery_mode === 'PDF_CODING';
+
+  if (error || !attempt || (!isPdfCoding && (!attempt.questions || attempt.questions.length === 0))) {
     return (
       <div
         style={{
@@ -700,20 +712,23 @@ export function AssessmentExamPage() {
     );
   }
 
-  const currentQ: QuestionSnapshot = attempt.questions[currentIndex] || attempt.questions[0];
+  const currentQ: QuestionSnapshot = (attempt.questions && attempt.questions.length > 0)
+    ? (attempt.questions[currentIndex] || attempt.questions[0])
+    : ({} as QuestionSnapshot);
   const answeredCount = Object.keys(answers).filter((k) => !!answers[Number(k)]).length;
 
   // Filter questions for active section tab
-  const sectionQuestions = attempt.questions.filter((q) => q.section_type === activeSectionTab);
-  const effectiveSectionQuestions = sectionQuestions.length > 0 ? sectionQuestions : attempt.questions;
+  const sectionQuestions = (attempt.questions || []).filter((q) => q.section_type === activeSectionTab);
+  const effectiveSectionQuestions = sectionQuestions.length > 0 ? sectionQuestions : (attempt.questions || []);
   const sectionAnsweredCount = effectiveSectionQuestions.filter(
     (q) => !!answers[q.question_order]
   ).length;
 
   // Position within section (1-indexed, e.g. "Question 1 of 25")
-  const currentSectionIndex =
-    effectiveSectionQuestions.findIndex((q) => q.question_order === currentQ.question_order) + 1;
-  const questionNumberInSection = currentSectionIndex > 0 ? currentSectionIndex : currentQ.question_order;
+  const currentSectionIndex = currentQ && currentQ.question_order !== undefined
+    ? effectiveSectionQuestions.findIndex((q) => q.question_order === currentQ.question_order) + 1
+    : 0;
+  const questionNumberInSection = currentSectionIndex > 0 ? currentSectionIndex : (currentQ?.question_order || 0);
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -787,7 +802,7 @@ export function AssessmentExamPage() {
                 fontWeight: 500,
               }}
             >
-              {attempt?.assessment_code ? `${attempt.assessment_code} • ` : ''}Total {attempt?.total_questions || 50} Questions
+              {attempt?.assessment_code ? `${attempt.assessment_code} • ` : ''}{isPdfCoding ? 'PDF Assessment Mode' : `Total ${attempt?.total_questions || 50} Questions`}
             </p>
           </div>
         </div>
@@ -950,18 +965,18 @@ export function AssessmentExamPage() {
             onClick={() => setShowSubmitModal(true)}
             style={{
               padding: '8px 18px',
-              backgroundColor: '#16A34A',
+              backgroundColor: isPdfCoding ? '#7C3AED' : '#16A34A',
               color: '#FFFFFF',
               border: 'none',
               borderRadius: '8px',
               fontSize: '13px',
               fontWeight: 700,
               cursor: 'pointer',
-              boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)',
+              boxShadow: isPdfCoding ? '0 2px 6px rgba(124, 58, 237, 0.25)' : '0 2px 6px rgba(22, 163, 74, 0.25)',
               transition: 'background-color 0.15s ease',
             }}
           >
-            Submit Test
+            {isPdfCoding ? 'Finish Assessment' : 'Submit Test'}
           </button>
         </div>
       </header>
@@ -2307,7 +2322,7 @@ export function AssessmentExamPage() {
                   cursor: submitting ? 'not-allowed' : 'pointer',
                 }}
               >
-                {submitting ? 'Submitting & Scoring...' : 'Yes, Submit Test'}
+                {submitting ? (isPdfCoding ? 'Finalizing Session...' : 'Submitting & Scoring...') : (isPdfCoding ? 'Yes, Finish Assessment' : 'Yes, Submit Test')}
               </button>
             </div>
           </div>
