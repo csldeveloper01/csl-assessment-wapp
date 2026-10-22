@@ -223,7 +223,33 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
             "pool_coding_count",
             "pool_sufficient",
             "sections",
+            "delivery_mode",
+            "pdf_filename",
+            "pdf_file_size",
+            "pdf_uploaded_at",
         ]
+
+    pdf_filename = serializers.SerializerMethodField()
+    pdf_file_size = serializers.SerializerMethodField()
+    pdf_uploaded_at = serializers.SerializerMethodField()
+
+    def get_pdf_filename(self, obj):
+        try:
+            return obj.pdf_document.original_filename if hasattr(obj, "pdf_document") and obj.pdf_document else None
+        except Exception:
+            return None
+
+    def get_pdf_file_size(self, obj):
+        try:
+            return obj.pdf_document.file_size if hasattr(obj, "pdf_document") and obj.pdf_document else None
+        except Exception:
+            return None
+
+    def get_pdf_uploaded_at(self, obj):
+        try:
+            return obj.pdf_document.uploaded_at if hasattr(obj, "pdf_document") and obj.pdf_document else None
+        except Exception:
+            return None
 
     def get_sections(self, obj):
         try:
@@ -290,7 +316,12 @@ class AdminAssessmentListSerializer(serializers.ModelSerializer):
         ).count()
 
     def get_submitted_count(self, obj):
-        return obj.attempts.filter(state=AssessmentAttempt.State.SUBMITTED).count()
+        return obj.attempts.filter(
+            state__in=[
+                AssessmentAttempt.State.SUBMITTED,
+                AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
+            ]
+        ).count()
 
 
 class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
@@ -304,6 +335,16 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
         required=False,
         write_only=True,
     )
+    delivery_mode = serializers.ChoiceField(
+        choices=Assessment.DeliveryMode.choices,
+        default=Assessment.DeliveryMode.MCQ,
+        required=False,
+    )
+    pdf_file = serializers.FileField(
+        required=False,
+        write_only=True,
+        allow_null=True,
+    )
 
     class Meta:
         model = Assessment
@@ -313,6 +354,8 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
             "title",
             "description",
             "assessment_type",
+            "delivery_mode",
+            "pdf_file",
             "duration_minutes",
             "total_marks",
             "aptitude_count",
@@ -348,12 +391,49 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
         duration = data.get("duration_minutes", getattr(self.instance, "duration_minutes", 60))
         total = data.get("total_marks", getattr(self.instance, "total_marks", 50))
         max_attempts = data.get("max_attempts", getattr(self.instance, "max_attempts", 1))
+        delivery_mode = data.get("delivery_mode", getattr(self.instance, "delivery_mode", Assessment.DeliveryMode.MCQ))
 
         errors = {}
         if duration < 1:
             errors["duration_minutes"] = "Duration must be at least 1 minute."
         if max_attempts < 1:
             errors["max_attempts"] = "Max attempts must be at least 1."
+
+        # PDF Assessment Mode validation
+        if delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+            from django.conf import settings
+            from .pdf_utils import validate_pdf_file
+
+            if not getattr(settings, "ENABLE_PDF_ASSESSMENT_MODE", True):
+                errors["delivery_mode"] = "PDF Assessment Mode is currently disabled."
+
+            # File upload check (can be in data or request.FILES)
+            pdf_file = data.get("pdf_file")
+            req = self.context.get("request")
+            if not pdf_file and req and hasattr(req, "FILES"):
+                pdf_file = req.FILES.get("pdf_file") or req.FILES.get("file")
+
+            if not self.instance and not pdf_file:
+                errors["pdf_file"] = "A valid PDF question paper must be uploaded when creating a PDF Assessment Mode round."
+            elif pdf_file:
+                is_valid, err_msg, meta = validate_pdf_file(pdf_file)
+                if not is_valid:
+                    errors["pdf_file"] = err_msg
+                else:
+                    self._validated_pdf_metadata = meta
+            elif self.instance:
+                # If updating an assessment, check if it already has a PDF attached
+                has_pdf = hasattr(self.instance, "pdf_document") and self.instance.pdf_document is not None
+                target_status = data.get("status", self.instance.status)
+                if target_status in [Assessment.Status.READY, Assessment.Status.OPEN] and not has_pdf:
+                    errors["pdf_file"] = "This assessment does not have an attached PDF question paper. Please upload a PDF before preparing or opening."
+
+            if total < 1:
+                errors["total_marks"] = "Total marks must be at least 1."
+
+            if errors:
+                raise serializers.ValidationError(errors)
+            return data
 
         sections_data = self.initial_data.get("sections")
         if sections_data is not None:
@@ -390,27 +470,159 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
         return data
 
     def create(self, validated_data):
+        import uuid
+        from django.core.files.base import ContentFile
+        from .models import AssessmentPdfDocument, AssessmentAuditLog
+        from .services import log_assessment_audit
+
         college_ids = validated_data.pop("eligible_college_ids", None)
         sections_data = self.initial_data.get("sections", None)
         validated_data.pop("sections", None)
+        pdf_file = validated_data.pop("pdf_file", None)
+
         assessment = super().create(validated_data)
         if college_ids is not None:
             colleges = College.objects.filter(id__in=college_ids)
             assessment.eligible_colleges.set(colleges)
-        if sections_data:
+        if sections_data and assessment.delivery_mode == Assessment.DeliveryMode.MCQ:
             self._sync_sections(assessment, sections_data)
+
+        if hasattr(self, "_validated_pdf_metadata"):
+            meta = self._validated_pdf_metadata
+            req = self.context.get("request")
+            user = req.user if (req and hasattr(req, "user") and getattr(req.user, "is_authenticated", False)) else None
+            from .storage_service import AssessmentPdfStorageService
+
+            storage_meta = AssessmentPdfStorageService.save_pdf(
+                assessment_id=assessment.id,
+                raw_bytes=meta["raw_bytes"],
+                original_filename=meta["original_filename"],
+            )
+            new_s3_key = storage_meta.get("s3_key")
+            new_s3_bucket = storage_meta.get("s3_bucket")
+
+            try:
+                pdf_doc = AssessmentPdfDocument.objects.create(
+                    assessment=assessment,
+                    original_filename=meta["original_filename"],
+                    file_size=meta["file_size"],
+                    sha256=meta["sha256"],
+                    content_type=meta["content_type"],
+                    binary_data=None if new_s3_key else meta["raw_bytes"],
+                    s3_key=new_s3_key,
+                    s3_bucket=new_s3_bucket,
+                    uploaded_by=user,
+                )
+                if not new_s3_key:
+                    safe_fname = f"assessment_{assessment.id}_{uuid.uuid4().hex[:8]}.pdf"
+                    pdf_doc.file.save(safe_fname, ContentFile(meta["raw_bytes"]), save=True)
+
+                log_assessment_audit(
+                    action=AssessmentAuditLog.Action.PDF_UPLOADED,
+                    entity_type="ASSESSMENT",
+                    entity_id=str(assessment.id),
+                    user=user,
+                    details={
+                        "filename": meta["original_filename"],
+                        "file_size": meta["file_size"],
+                        "sha256": meta["sha256"],
+                        "storage_type": storage_meta.get("storage_type"),
+                    },
+                )
+            except Exception:
+                if new_s3_key:
+                    AssessmentPdfStorageService.delete_pdf_object(new_s3_key, new_s3_bucket)
+                raise
+
         return assessment
 
     def update(self, instance, validated_data):
+        import uuid
+        from django.core.files.base import ContentFile
+        from .models import AssessmentPdfDocument, AssessmentAuditLog
+        from .services import log_assessment_audit
+
         college_ids = validated_data.pop("eligible_college_ids", None)
         sections_data = self.initial_data.get("sections", None)
         validated_data.pop("sections", None)
+        pdf_file = validated_data.pop("pdf_file", None)
+
         assessment = super().update(instance, validated_data)
         if college_ids is not None:
             colleges = College.objects.filter(id__in=college_ids)
             assessment.eligible_colleges.set(colleges)
-        if sections_data is not None:
+        if sections_data is not None and assessment.delivery_mode == Assessment.DeliveryMode.MCQ:
             self._sync_sections(assessment, sections_data)
+
+        if hasattr(self, "_validated_pdf_metadata"):
+            meta = self._validated_pdf_metadata
+            req = self.context.get("request")
+            user = req.user if (req and hasattr(req, "user") and getattr(req.user, "is_authenticated", False)) else None
+            from django.db import transaction
+            from .storage_service import AssessmentPdfStorageService
+
+            storage_meta = AssessmentPdfStorageService.save_pdf(
+                assessment_id=assessment.id,
+                raw_bytes=meta["raw_bytes"],
+                original_filename=meta["original_filename"],
+            )
+            new_s3_key = storage_meta.get("s3_key")
+            new_s3_bucket = storage_meta.get("s3_bucket")
+
+            pdf_doc = getattr(assessment, "pdf_document", None)
+            old_s3_key = pdf_doc.s3_key if pdf_doc else None
+            old_s3_bucket = pdf_doc.s3_bucket if pdf_doc else None
+            created = False
+
+            try:
+                if not pdf_doc:
+                    pdf_doc = AssessmentPdfDocument.objects.create(
+                        assessment=assessment,
+                        original_filename=meta["original_filename"],
+                        file_size=meta["file_size"],
+                        sha256=meta["sha256"],
+                        content_type=meta["content_type"],
+                        binary_data=None if new_s3_key else meta["raw_bytes"],
+                        s3_key=new_s3_key,
+                        s3_bucket=new_s3_bucket,
+                        uploaded_by=user,
+                    )
+                    created = True
+                else:
+                    pdf_doc.original_filename = meta["original_filename"]
+                    pdf_doc.file_size = meta["file_size"]
+                    pdf_doc.sha256 = meta["sha256"]
+                    pdf_doc.content_type = meta["content_type"]
+                    pdf_doc.s3_key = new_s3_key
+                    pdf_doc.s3_bucket = new_s3_bucket
+                    pdf_doc.binary_data = None if new_s3_key else meta["raw_bytes"]
+                    pdf_doc.uploaded_by = user
+                    pdf_doc.save()
+
+                if not new_s3_key:
+                    safe_fname = f"assessment_{assessment.id}_{uuid.uuid4().hex[:8]}.pdf"
+                    pdf_doc.file.save(safe_fname, ContentFile(meta["raw_bytes"]), save=True)
+
+                if old_s3_key and old_s3_key != new_s3_key:
+                    transaction.on_commit(lambda: AssessmentPdfStorageService.delete_pdf_object(old_s3_key, old_s3_bucket))
+
+                log_assessment_audit(
+                    action=AssessmentAuditLog.Action.PDF_REPLACED if not created else AssessmentAuditLog.Action.PDF_UPLOADED,
+                    entity_type="ASSESSMENT",
+                    entity_id=str(assessment.id),
+                    user=user,
+                    details={
+                        "filename": meta["original_filename"],
+                        "file_size": meta["file_size"],
+                        "sha256": meta["sha256"],
+                        "storage_type": storage_meta.get("storage_type"),
+                    },
+                )
+            except Exception:
+                if new_s3_key:
+                    AssessmentPdfStorageService.delete_pdf_object(new_s3_key, new_s3_bucket)
+                raise
+
         return assessment
 
     def _sync_sections(self, assessment, sections_data):
@@ -761,7 +973,18 @@ class AdminLiveAttemptSerializer(serializers.ModelSerializer):
             "is_flagged",
             "flag_reason",
             "total_score",
+            "delivery_mode",
+            "is_manual_evaluation_pending",
         ]
+
+    delivery_mode = serializers.SerializerMethodField()
+    is_manual_evaluation_pending = serializers.SerializerMethodField()
+
+    def get_delivery_mode(self, obj):
+        return obj.assessment.delivery_mode if obj.assessment else "MCQ"
+
+    def get_is_manual_evaluation_pending(self, obj):
+        return obj.state == AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION
 
     def get_assessment_title(self, obj):
         if obj.assessment:
@@ -944,7 +1167,25 @@ class AdminAttemptReviewSerializer(serializers.ModelSerializer):
             "answered_count",
             "questions",
             "integrity_events",
+            "delivery_mode",
+            "is_manual_evaluation_pending",
+            "pdf_filename",
         ]
+
+    delivery_mode = serializers.SerializerMethodField()
+    is_manual_evaluation_pending = serializers.SerializerMethodField()
+    pdf_filename = serializers.SerializerMethodField()
+
+    def get_delivery_mode(self, obj):
+        return obj.assessment.delivery_mode if obj.assessment else "MCQ"
+
+    def get_is_manual_evaluation_pending(self, obj):
+        return obj.state == AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION
+
+    def get_pdf_filename(self, obj):
+        if obj.assessment and hasattr(obj.assessment, "pdf_document") and obj.assessment.pdf_document:
+            return obj.assessment.pdf_document.original_filename
+        return None
 
     def get_assessment_title(self, obj):
         if obj.assessment:
@@ -1015,7 +1256,18 @@ class AdminResultSerializer(serializers.ModelSerializer):
             "assessment_total_marks",
             "assessment_aptitude_count",
             "assessment_coding_count",
+            "delivery_mode",
+            "is_manual_evaluation_pending",
         ]
+
+    delivery_mode = serializers.SerializerMethodField()
+    is_manual_evaluation_pending = serializers.SerializerMethodField()
+
+    def get_delivery_mode(self, obj):
+        return obj.assessment.delivery_mode if obj.assessment else "MCQ"
+
+    def get_is_manual_evaluation_pending(self, obj):
+        return obj.state == AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION
 
     assessment_total_marks = serializers.SerializerMethodField()
     assessment_aptitude_count = serializers.SerializerMethodField()

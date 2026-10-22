@@ -4,6 +4,7 @@ import uuid
 from rest_framework.views import APIView
 from rest_framework.response import Response
 from rest_framework import status
+from rest_framework.parsers import MultiPartParser, FormParser, JSONParser
 from django.db import transaction
 from django.db.models import Q
 from django.shortcuts import get_object_or_404
@@ -14,6 +15,7 @@ from .models import (
     College,
     Assessment,
     AssessmentAttempt,
+    AssessmentPdfDocument,
     AttemptQuestionSnapshot,
     QuestionBank,
     AssessmentConfig,
@@ -83,7 +85,12 @@ class AdminStatsView(APIView):
         candidates_count = Candidate.objects.count()
         attempts_count = AssessmentAttempt.objects.count()
         in_progress_count = AssessmentAttempt.objects.filter(state=AssessmentAttempt.State.IN_PROGRESS).count()
-        submitted_count = AssessmentAttempt.objects.filter(state=AssessmentAttempt.State.SUBMITTED).count()
+        submitted_count = AssessmentAttempt.objects.filter(
+            state__in=[
+                AssessmentAttempt.State.SUBMITTED,
+                AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
+            ]
+        ).count()
         timed_out_count = AssessmentAttempt.objects.filter(state=AssessmentAttempt.State.TIMED_OUT).count()
         flagged_count = AssessmentAttempt.objects.filter(
             Q(state=AssessmentAttempt.State.FLAGGED_FOR_REVIEW) | Q(is_flagged=True)
@@ -323,6 +330,7 @@ class AdminCollegeImportCandidatesView(APIView):
 
 class AdminAssessmentListView(APIView):
     permission_classes = [IsCSLAdminUser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request):
         queryset = Assessment.objects.prefetch_related("eligible_colleges", "attempts").all().order_by("-created_at")
@@ -340,7 +348,7 @@ class AdminAssessmentListView(APIView):
         return Response(serializer.data)
 
     def post(self, request):
-        serializer = AdminAssessmentCreateUpdateSerializer(data=request.data)
+        serializer = AdminAssessmentCreateUpdateSerializer(data=request.data, context={"request": request})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -363,6 +371,7 @@ class AdminAssessmentListView(APIView):
 
 class AdminAssessmentDetailView(APIView):
     permission_classes = [IsCSLAdminUser]
+    parser_classes = [MultiPartParser, FormParser, JSONParser]
 
     def get(self, request, pk):
         assessment = get_object_or_404(
@@ -373,7 +382,7 @@ class AdminAssessmentDetailView(APIView):
 
     def patch(self, request, pk):
         assessment = get_object_or_404(Assessment, pk=pk)
-        serializer = AdminAssessmentCreateUpdateSerializer(assessment, data=request.data, partial=True)
+        serializer = AdminAssessmentCreateUpdateSerializer(assessment, data=request.data, partial=True, context={"request": request})
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -848,7 +857,10 @@ class AdminCandidateExportCSVView(APIView):
                 elif latest_attempt.config:
                     assessment_name = latest_attempt.config.title
 
-                if latest_attempt.state in [
+                if latest_attempt.state == AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION:
+                    score_display = "Pending Manual Evaluation"
+                    percentage_display = "—"
+                elif latest_attempt.state in [
                     AssessmentAttempt.State.SUBMITTED,
                     AssessmentAttempt.State.TIMED_OUT,
                     AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
@@ -1694,6 +1706,7 @@ class AdminResultsView(APIView):
         queryset = AssessmentAttempt.objects.filter(
             state__in=[
                 AssessmentAttempt.State.SUBMITTED,
+                AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
                 AssessmentAttempt.State.TIMED_OUT,
                 AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
             ]
@@ -2036,3 +2049,138 @@ class AdminUserDetailView(APIView):
             "message": f"Administrator account '{email}' was deleted successfully.",
             "id": user_id,
         }, status=status.HTTP_200_OK)
+
+
+class AdminAssessmentUploadPdfView(APIView):
+    """
+    Dedicated admin endpoint to upload or replace the PDF question paper for an assessment.
+    """
+    permission_classes = [IsCSLAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request, pk):
+        import uuid
+        from django.core.files.base import ContentFile
+        from .pdf_utils import validate_pdf_file
+        from .services import log_assessment_audit
+
+        assessment = get_object_or_404(Assessment, pk=pk)
+
+        pdf_file = request.FILES.get("pdf_file") or request.FILES.get("file")
+        if not pdf_file:
+            return Response(
+                {"detail": "No file uploaded. Please supply a 'pdf_file' in form-data."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        is_valid, err_msg, meta = validate_pdf_file(pdf_file)
+        if not is_valid:
+            return Response({"detail": err_msg}, status=status.HTTP_400_BAD_REQUEST)
+
+        from .storage_service import AssessmentPdfStorageService
+
+        storage_res = AssessmentPdfStorageService.save_pdf(
+            assessment_id=assessment.id,
+            raw_bytes=meta["raw_bytes"],
+            original_filename=meta["original_filename"],
+        )
+        new_s3_key = storage_res.get("s3_key")
+        new_s3_bucket = storage_res.get("s3_bucket")
+
+        pdf_doc = getattr(assessment, "pdf_document", None)
+        old_s3_key = pdf_doc.s3_key if pdf_doc else None
+        old_s3_bucket = pdf_doc.s3_bucket if pdf_doc else None
+        created = False
+
+        try:
+            with transaction.atomic():
+                if not pdf_doc:
+                    pdf_doc = AssessmentPdfDocument.objects.create(
+                        assessment=assessment,
+                        original_filename=meta["original_filename"],
+                        file_size=meta["file_size"],
+                        sha256=meta["sha256"],
+                        content_type=meta["content_type"],
+                        binary_data=None if new_s3_key else meta["raw_bytes"],
+                        s3_key=new_s3_key,
+                        s3_bucket=new_s3_bucket,
+                        uploaded_by=request.user if getattr(request.user, "is_authenticated", False) else None,
+                    )
+                    created = True
+                else:
+                    pdf_doc.original_filename = meta["original_filename"]
+                    pdf_doc.file_size = meta["file_size"]
+                    pdf_doc.sha256 = meta["sha256"]
+                    pdf_doc.content_type = meta["content_type"]
+                    pdf_doc.s3_key = new_s3_key
+                    pdf_doc.s3_bucket = new_s3_bucket
+                    pdf_doc.binary_data = None if new_s3_key else meta["raw_bytes"]
+                    pdf_doc.uploaded_by = request.user if getattr(request.user, "is_authenticated", False) else None
+                    pdf_doc.save()
+
+                if not new_s3_key:
+                    safe_fname = f"assessment_{assessment.id}_{uuid.uuid4().hex[:8]}.pdf"
+                    pdf_doc.file.save(safe_fname, ContentFile(meta["raw_bytes"]), save=True)
+
+                if old_s3_key and old_s3_key != new_s3_key:
+                    transaction.on_commit(lambda: AssessmentPdfStorageService.delete_pdf_object(old_s3_key, old_s3_bucket))
+
+                # Ensure assessment is flagged as PDF_CODING
+                if assessment.delivery_mode != Assessment.DeliveryMode.PDF_CODING:
+                    assessment.delivery_mode = Assessment.DeliveryMode.PDF_CODING
+                    assessment.save(update_fields=["delivery_mode", "updated_at"])
+
+                log_assessment_audit(
+                    action=AssessmentAuditLog.Action.PDF_REPLACED if not created else AssessmentAuditLog.Action.PDF_UPLOADED,
+                    entity_type="ASSESSMENT",
+                    entity_id=str(assessment.id),
+                    user=request.user,
+                    details={
+                        "filename": meta["original_filename"],
+                        "file_size": meta["file_size"],
+                        "sha256": meta["sha256"],
+                        "storage_type": storage_res.get("storage_type"),
+                    },
+                )
+        except Exception:
+            if new_s3_key:
+                AssessmentPdfStorageService.delete_pdf_object(new_s3_key, new_s3_bucket)
+            raise
+
+        return Response({
+            "message": "PDF question paper attached successfully.",
+            "delivery_mode": assessment.delivery_mode,
+            "filename": pdf_doc.original_filename,
+            "file_size": pdf_doc.file_size,
+            "uploaded_at": pdf_doc.uploaded_at.isoformat(),
+        }, status=status.HTTP_200_OK)
+
+
+class AdminAssessmentPdfDownloadView(APIView):
+    """
+    Authenticated admin preview/download of the assessment question paper PDF.
+    """
+    permission_classes = [IsCSLAdminUser]
+
+    def get(self, request, pk):
+        assessment = get_object_or_404(Assessment, pk=pk)
+        if not hasattr(assessment, "pdf_document") or not assessment.pdf_document:
+            return Response(
+                {"detail": f"Assessment '{assessment.code}' has no attached PDF question paper."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        pdf_doc = assessment.pdf_document
+        pdf_bytes = pdf_doc.get_file_bytes()
+        if not pdf_bytes:
+            return Response(
+                {"detail": "The question paper PDF content could not be read from storage."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        resp = HttpResponse(pdf_bytes, content_type="application/pdf")
+        resp["Content-Disposition"] = f'inline; filename="{pdf_doc.original_filename}"'
+        resp["Content-Length"] = len(pdf_bytes)
+        resp["X-Content-Type-Options"] = "nosniff"
+        resp["Cache-Control"] = "private, no-cache, no-store, must-revalidate"
+        return resp

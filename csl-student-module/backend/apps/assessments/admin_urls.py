@@ -18,6 +18,8 @@ from .admin_views import (
     AdminAssessmentAssignQuestionsView,
     AdminAssessmentReleaseResultsView,
     AdminAssessmentAuditLogsView,
+    AdminAssessmentUploadPdfView,
+    AdminAssessmentPdfDownloadView,
     AdminCandidateListView,
     AdminCandidateExportCSVView,
     AdminCandidateDetailView,
@@ -70,6 +72,8 @@ urlpatterns = [
     path("assessments/<uuid:pk>/assign-questions/", AdminAssessmentAssignQuestionsView.as_view(), name="admin-assessment-assign-questions"),
     path("assessments/<uuid:pk>/release-results/", AdminAssessmentReleaseResultsView.as_view(), name="admin-assessment-release-results"),
     path("assessments/<uuid:pk>/audit-logs/", AdminAssessmentAuditLogsView.as_view(), name="admin-assessment-audit-logs"),
+    path("assessments/<uuid:pk>/upload-pdf/", AdminAssessmentUploadPdfView.as_view(), name="admin-assessment-upload-pdf"),
+    path("assessments/<uuid:pk>/pdf/", AdminAssessmentPdfDownloadView.as_view(), name="admin-assessment-pdf-download"),
 
     # Candidates
     path("candidates/", AdminCandidateListView.as_view(), name="admin-candidates"),

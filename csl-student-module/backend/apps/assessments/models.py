@@ -202,6 +202,10 @@ class Assessment(models.Model):
         CLOSED = "CLOSED", "Closed"
         ARCHIVED = "ARCHIVED", "Archived"
 
+    class DeliveryMode(models.TextChoices):
+        MCQ = "MCQ", "Multiple Choice (MCQ)"
+        PDF_CODING = "PDF_CODING", "PDF Assessment Mode"
+
     class ClosePolicy(models.TextChoices):
         ALLOW_FINISH = "ALLOW_FINISH", "Allow In-Progress Attempts to Finish"
         STRICT_CUTOFF = "STRICT_CUTOFF", "Strict Cutoff (Terminate Active Attempts)"
@@ -216,6 +220,13 @@ class Assessment(models.Model):
         default="INITIAL_DIAGNOSTIC",
         db_index=True,
         help_text="Classification of assessment type (e.g. INITIAL_DIAGNOSTIC, TECHNICAL_MOCK)",
+    )
+    delivery_mode = models.CharField(
+        max_length=20,
+        choices=DeliveryMode.choices,
+        default=DeliveryMode.MCQ,
+        db_index=True,
+        help_text="Assessment delivery mode: MCQ or PDF_CODING",
     )
 
     # Independent configuration parameters
@@ -318,7 +329,7 @@ class Assessment(models.Model):
             errors["total_marks"] = "Total marks must be at least 1."
 
         try:
-            if self.pk and self.section_allocations.exists():
+            if self.delivery_mode == self.DeliveryMode.MCQ and self.pk and self.section_allocations.exists():
                 alloc_sum = sum(a.question_count * a.marks_per_question for a in self.section_allocations.all())
                 if self.total_marks != alloc_sum:
                     errors["total_marks"] = f"Total marks ({self.total_marks}) must equal the sum of section allocations ({alloc_sum})."
@@ -474,6 +485,14 @@ class AssessmentAttempt(models.Model):
         SUBMITTED = "SUBMITTED", "Submitted"
         TIMED_OUT = "TIMED_OUT", "Timed Out"
         FLAGGED_FOR_REVIEW = "FLAGGED_FOR_REVIEW", "Flagged for Review"
+        COMPLETED_PENDING_MANUAL_EVALUATION = "COMPLETED_PENDING_MANUAL_EVALUATION", "Completed (Pending Manual Evaluation)"
+
+    COMPLETED_STATES = [
+        State.SUBMITTED,
+        State.TIMED_OUT,
+        State.FLAGGED_FOR_REVIEW,
+        State.COMPLETED_PENDING_MANUAL_EVALUATION,
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     candidate = models.ForeignKey(Candidate, on_delete=models.CASCADE, related_name="attempts")
@@ -487,7 +506,7 @@ class AssessmentAttempt(models.Model):
         help_text="Associated multi-assessment entity",
     )
     
-    state = models.CharField(max_length=30, choices=State.choices, default=State.CREATED, db_index=True)
+    state = models.CharField(max_length=40, choices=State.choices, default=State.CREATED, db_index=True)
     started_at = models.DateTimeField(null=True, blank=True)
     deadline = models.DateTimeField(null=True, blank=True)
     submitted_at = models.DateTimeField(null=True, blank=True)
@@ -693,6 +712,9 @@ class AssessmentAuditLog(models.Model):
         INTEGRITY_EVENTS_BULK_DELETED = "INTEGRITY_EVENTS_BULK_DELETED", "Integrity Events Bulk Deleted"
         USER_DELETED = "USER_DELETED", "User Deleted"
         USER_STATUS_TOGGLED = "USER_STATUS_TOGGLED", "User Status Changed"
+        PDF_UPLOADED = "PDF_UPLOADED", "Assessment PDF Uploaded"
+        PDF_REPLACED = "PDF_REPLACED", "Assessment PDF Replaced"
+        PDF_DELETED = "PDF_DELETED", "Assessment PDF Deleted"
 
     action = models.CharField(max_length=40, choices=Action.choices, db_index=True)
     entity_type = models.CharField(max_length=30, db_index=True, help_text="ASSESSMENT, COLLEGE, CANDIDATE")
@@ -717,3 +739,85 @@ class AssessmentAuditLog(models.Model):
 
     def __str__(self):
         return f"{self.action} on {self.entity_type} {self.entity_id} by {self.performed_by_name or 'System'}"
+
+
+class AssessmentPdfDocument(models.Model):
+    """
+    Durable storage for assessment question paper PDF.
+    Supports Neon Object Storage / S3 backend, local FileField storage,
+    and optional database binary backup for local dev resilience.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    assessment = models.OneToOneField(
+        Assessment,
+        on_delete=models.CASCADE,
+        related_name="pdf_document",
+        help_text="Assessment this question paper PDF belongs to",
+    )
+    file = models.FileField(upload_to="assessment_pdfs/", null=True, blank=True)
+    binary_data = models.BinaryField(null=True, blank=True, help_text="Durable storage copy for ephemeral container resilience")
+    s3_key = models.CharField(max_length=512, blank=True, null=True, help_text="Object key in S3-compatible Neon storage")
+    s3_bucket = models.CharField(max_length=255, blank=True, null=True, help_text="S3 bucket name")
+    original_filename = models.CharField(max_length=255, help_text="Sanitized original upload filename")
+    file_size = models.PositiveIntegerField(help_text="File size in bytes")
+    sha256 = models.CharField(max_length=64, db_index=True, help_text="SHA-256 content checksum")
+    content_type = models.CharField(max_length=100, default="application/pdf")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    uploaded_by = models.ForeignKey(
+        "users.User",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="uploaded_assessment_pdfs",
+    )
+
+    class Meta:
+        ordering = ["-uploaded_at"]
+
+    def __str__(self):
+        return f"PDF for {self.assessment.code} ({self.original_filename})"
+
+    def delete(self, *args, **kwargs):
+        if self.s3_key:
+            try:
+                from .storage_service import AssessmentPdfStorageService
+                AssessmentPdfStorageService.delete_pdf_object(self.s3_key, self.s3_bucket)
+            except Exception:
+                pass
+        if self.file:
+            try:
+                self.file.delete(save=False)
+            except Exception:
+                pass
+        super().delete(*args, **kwargs)
+
+    def get_file_bytes(self) -> bytes:
+        """
+        Retrieves raw PDF bytes. Checks:
+        1. S3 / Neon Object Storage if s3_key is present and storage is configured.
+        2. Local disk file if available.
+        3. Durable binary_data database column fallback.
+        """
+        if self.s3_key:
+            try:
+                from .storage_service import AssessmentPdfStorageService
+                if AssessmentPdfStorageService.is_configured():
+                    data = AssessmentPdfStorageService.get_pdf_bytes(self.s3_key, self.s3_bucket)
+                    if data:
+                        return data
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to read PDF from S3 key %s: %s", self.s3_key, e)
+
+        if self.file:
+            try:
+                self.file.open("rb")
+                data = self.file.read()
+                self.file.close()
+                if data:
+                    return data
+            except Exception:
+                pass
+        if self.binary_data:
+            return bytes(self.binary_data)
+        return b""

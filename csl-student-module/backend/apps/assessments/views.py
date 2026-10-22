@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404
 from django.db import transaction
 from django.db.models import Exists, OuterRef
 from django.utils import timezone
+from django.http import HttpResponse
 
 from .models import (
     Candidate,
@@ -548,6 +549,7 @@ class AttemptHeartbeatView(APIView):
 
         if attempt.state in [
             AssessmentAttempt.State.SUBMITTED,
+            AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
             AssessmentAttempt.State.TIMED_OUT,
             AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
         ]:
@@ -628,6 +630,12 @@ class SyncAnswersView(APIView):
 
         if attempt.state != AssessmentAttempt.State.IN_PROGRESS:
             return Response({"detail": f"Attempt is not active (state: {attempt.state})."}, status=status.HTTP_400_BAD_REQUEST)
+
+        if attempt.assessment and attempt.assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+            return Response(
+                {"detail": "Digital answer synchronization is not supported for PDF Coding Assessments. Answers must be written on paper."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
 
         if attempt.is_expired():
             finalize_assessment_attempt(attempt, final_state=AssessmentAttempt.State.TIMED_OUT)
@@ -720,6 +728,7 @@ class RecordIntegrityEventView(APIView):
             # If attempt is already in a terminal state, return current status
             if attempt.state in [
                 AssessmentAttempt.State.SUBMITTED,
+                AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
                 AssessmentAttempt.State.TIMED_OUT,
                 AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
             ]:
@@ -807,6 +816,7 @@ class RecordIntegrityEventView(APIView):
 
             is_final = attempt.state in [
                 AssessmentAttempt.State.SUBMITTED,
+                AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
                 AssessmentAttempt.State.TIMED_OUT,
                 AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
             ]
@@ -890,3 +900,71 @@ class QuestionBankSummaryView(APIView):
             "coding_required": config.coding_count,
             "is_sufficient": (aptitude_active >= config.aptitude_count and coding_active >= config.coding_count),
         })
+
+
+class CandidateAttemptPdfDownloadView(APIView):
+    """
+    Candidate endpoint to stream the assessment question paper PDF.
+    Requires CandidateAssessmentAuthentication token or active session.
+    Strictly verifies:
+    1. Candidate is authenticated
+    2. Attempt belongs to the candidate
+    3. Assessment delivery_mode is PDF_CODING
+    4. Attempt is not expired (auto-times out if expired)
+    """
+    authentication_classes = [CandidateAssessmentAuthentication, SessionAuthentication, BasicAuthentication]
+    permission_classes = [AllowAny]
+
+    def get(self, request, attempt_id):
+        attempt = get_object_or_404(
+            AssessmentAttempt.objects.select_related("candidate", "assessment"),
+            id=attempt_id,
+        )
+
+        if not verify_attempt_ownership(request, attempt):
+            return Response(
+                {"detail": "Access forbidden: you do not own this attempt."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+
+        is_pdf_mode = (
+            attempt.assessment
+            and (
+                attempt.assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING
+                or (hasattr(attempt.assessment, "pdf_document") and bool(attempt.assessment.pdf_document))
+            )
+        )
+        if not is_pdf_mode:
+            return Response(
+                {"detail": "PDF question paper is only available for PDF Coding Assessments."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Check timeout server-side
+        if attempt.state == AssessmentAttempt.State.IN_PROGRESS and attempt.is_expired():
+            finalize_assessment_attempt(attempt, final_state=AssessmentAttempt.State.TIMED_OUT)
+            return Response(
+                {"detail": "Your assessment attempt has expired."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not hasattr(attempt.assessment, "pdf_document") or not attempt.assessment.pdf_document:
+            return Response(
+                {"detail": "The assessment question paper PDF is currently unavailable. Please contact your test administrator."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        pdf_doc = attempt.assessment.pdf_document
+        pdf_bytes = pdf_doc.get_file_bytes()
+        if not pdf_bytes:
+            return Response(
+                {"detail": "The question paper PDF content could not be retrieved from storage."},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        resp = HttpResponse(pdf_bytes, content_type="application/pdf")
+        resp["Content-Disposition"] = f'inline; filename="{pdf_doc.original_filename}"'
+        resp["Content-Length"] = len(pdf_bytes)
+        resp["X-Content-Type-Options"] = "nosniff"
+        resp["Cache-Control"] = "private, no-cache, no-store, must-revalidate"
+        return resp

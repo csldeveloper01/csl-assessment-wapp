@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import cslTypographyLogo from '../../assets/CSL-TYPOGRAPHY.png';
+import { SecurePdfViewer } from '../../components/assessment/SecurePdfViewer';
 import {
   getAttemptState,
   saveAnswer,
@@ -8,6 +9,7 @@ import {
   syncAnswers,
   recordIntegrityEvent,
   finalizeAssessment,
+  fetchAttemptPdfBlob,
   type AttemptDetailResponse,
   type QuestionSnapshot,
 } from '../../api/assessment';
@@ -81,6 +83,12 @@ export function AssessmentExamPage() {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(
     () => !!(document.fullscreenElement || (document as any).webkitFullscreenElement || (window.innerHeight >= screen.height - 20))
   );
+
+  // PDF Assessment Mode State
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
+  const [pdfLoading, setPdfLoading] = useState<boolean>(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+
 
   const isPageHiddenRef = useRef<boolean>(false);
 
@@ -168,7 +176,8 @@ export function AssessmentExamPage() {
       if (
         data.state === 'SUBMITTED' ||
         data.state === 'TIMED_OUT' ||
-        data.state === 'FLAGGED_FOR_REVIEW'
+        data.state === 'FLAGGED_FOR_REVIEW' ||
+        data.state === 'COMPLETED_PENDING_MANUAL_EVALUATION'
       ) {
         navigate(`/assessment/results/${data.id}`, { replace: true });
         return;
@@ -185,7 +194,7 @@ export function AssessmentExamPage() {
       // Hydrate answers and save states
       const initialAns: Record<number, string> = {};
       const initialSave: Record<number, 'saved' | 'saving' | 'failed'> = {};
-      data.questions.forEach((q) => {
+      (data.questions || []).forEach((q) => {
         if (q.selected_option && q.selected_option.trim()) {
           initialAns[q.question_order] = q.selected_option;
           initialSave[q.question_order] = 'saved';
@@ -240,6 +249,51 @@ export function AssessmentExamPage() {
   useEffect(() => {
     loadAttempt();
   }, [loadAttempt]);
+
+  // Load PDF for PDF Coding assessments
+  const loadPdf = useCallback(() => {
+    const isPdf = attempt?.delivery_mode === 'PDF_CODING' || Boolean(attempt?.has_pdf);
+    if (!attemptId || !isPdf) return undefined;
+    let isMounted = true;
+    setPdfLoading(true);
+    setPdfError(null);
+
+    fetchAttemptPdfBlob(attemptId)
+      .then((blob) => {
+        if (!isMounted) return;
+        setPdfBlob(blob);
+      })
+      .catch(async (err: any) => {
+        if (!isMounted) return;
+        let msg = 'Unable to load assessment question paper PDF. Please notify your test invigilator.';
+        if (err?.response?.data instanceof Blob) {
+          try {
+            const text = await err.response.data.text();
+            const parsed = JSON.parse(text);
+            if (parsed.detail) msg = parsed.detail;
+          } catch {
+            // retain fallback
+          }
+        } else if (err?.response?.data?.detail) {
+          msg = err.response.data.detail;
+        }
+        setPdfError(msg);
+      })
+      .finally(() => {
+        if (isMounted) setPdfLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [attemptId, attempt?.delivery_mode, attempt?.has_pdf]);
+
+  useEffect(() => {
+    const cleanup = loadPdf();
+    return () => {
+      if (cleanup) cleanup();
+    };
+  }, [loadPdf]);
 
   // Keep active section tab synchronized with current question section
   useEffect(() => {
@@ -611,7 +665,12 @@ export function AssessmentExamPage() {
     );
   }
 
-  if (error || !attempt || !attempt.questions || attempt.questions.length === 0) {
+  const isPdfCoding =
+    attempt?.delivery_mode === 'PDF_CODING' ||
+    String(attempt?.delivery_mode).toUpperCase() === 'PDF_CODING' ||
+    Boolean(attempt?.has_pdf);
+
+  if (error || !attempt || (!isPdfCoding && (!attempt.questions || attempt.questions.length === 0))) {
     return (
       <div
         style={{
@@ -662,20 +721,23 @@ export function AssessmentExamPage() {
     );
   }
 
-  const currentQ: QuestionSnapshot = attempt.questions[currentIndex] || attempt.questions[0];
+  const currentQ: QuestionSnapshot = (attempt.questions && attempt.questions.length > 0)
+    ? (attempt.questions[currentIndex] || attempt.questions[0])
+    : ({} as QuestionSnapshot);
   const answeredCount = Object.keys(answers).filter((k) => !!answers[Number(k)]).length;
 
   // Filter questions for active section tab
-  const sectionQuestions = attempt.questions.filter((q) => q.section_type === activeSectionTab);
-  const effectiveSectionQuestions = sectionQuestions.length > 0 ? sectionQuestions : attempt.questions;
+  const sectionQuestions = (attempt.questions || []).filter((q) => q.section_type === activeSectionTab);
+  const effectiveSectionQuestions = sectionQuestions.length > 0 ? sectionQuestions : (attempt.questions || []);
   const sectionAnsweredCount = effectiveSectionQuestions.filter(
     (q) => !!answers[q.question_order]
   ).length;
 
   // Position within section (1-indexed, e.g. "Question 1 of 25")
-  const currentSectionIndex =
-    effectiveSectionQuestions.findIndex((q) => q.question_order === currentQ.question_order) + 1;
-  const questionNumberInSection = currentSectionIndex > 0 ? currentSectionIndex : currentQ.question_order;
+  const currentSectionIndex = currentQ && currentQ.question_order !== undefined
+    ? effectiveSectionQuestions.findIndex((q) => q.question_order === currentQ.question_order) + 1
+    : 0;
+  const questionNumberInSection = currentSectionIndex > 0 ? currentSectionIndex : (currentQ?.question_order || 0);
 
   const formatTime = (secs: number) => {
     const m = Math.floor(secs / 60);
@@ -749,7 +811,7 @@ export function AssessmentExamPage() {
                 fontWeight: 500,
               }}
             >
-              {attempt?.assessment_code ? `${attempt.assessment_code} • ` : ''}Total {attempt?.total_questions || 50} Questions
+              {attempt?.assessment_code ? `${attempt.assessment_code} • ` : ''}{isPdfCoding ? 'PDF Assessment Mode' : `Total ${attempt?.total_questions || 50} Questions`}
             </p>
           </div>
         </div>
@@ -912,18 +974,18 @@ export function AssessmentExamPage() {
             onClick={() => setShowSubmitModal(true)}
             style={{
               padding: '8px 18px',
-              backgroundColor: '#16A34A',
+              backgroundColor: isPdfCoding ? '#7C3AED' : '#16A34A',
               color: '#FFFFFF',
               border: 'none',
               borderRadius: '8px',
               fontSize: '13px',
               fontWeight: 700,
               cursor: 'pointer',
-              boxShadow: '0 2px 6px rgba(22, 163, 74, 0.25)',
+              boxShadow: isPdfCoding ? '0 2px 6px rgba(124, 58, 237, 0.25)' : '0 2px 6px rgba(22, 163, 74, 0.25)',
               transition: 'background-color 0.15s ease',
             }}
           >
-            Submit Test
+            {isPdfCoding ? 'Finish Assessment' : 'Submit Test'}
           </button>
         </div>
       </header>
@@ -1073,7 +1135,154 @@ export function AssessmentExamPage() {
         </div>
       )}
 
-      {/* ─── 2. MAIN 3-COLUMN WORKSPACE (SINGLE-VIEWPORT FIT) ─────────── */}
+      {/* ─── 2. MAIN WORKSPACE (PDF CODING OR 3-COLUMN MCQ) ─────────── */}
+      {isPdfCoding ? (
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            padding: '12px 24px 16px',
+            overflow: 'hidden',
+            boxSizing: 'border-box',
+          }}
+        >
+          {/* PDF Mode Info Bar */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '10px',
+              border: '1.5px solid #DDD6FE',
+              padding: '10px 16px',
+              marginBottom: '12px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '12px',
+              boxShadow: '0 2px 8px rgba(124, 58, 237, 0.05)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span
+                style={{
+                  backgroundColor: '#EDE9FE',
+                  color: '#6D28D9',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontWeight: 800,
+                  fontSize: '12px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                }}
+              >
+                📄 PDF Coding Assessment Mode
+              </span>
+              <span style={{ fontSize: '13px', color: '#4B5563' }}>
+                Write all solutions on your physical answer paper. No digital code submission is collected.
+              </span>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <span
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '12px',
+                  color: '#059669',
+                  fontWeight: 700,
+                  backgroundColor: '#ECFDF5',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid #A7F3D0',
+                }}
+              >
+                🔒 Read-Only Question Paper
+              </span>
+            </div>
+          </div>
+
+          {/* Secure Custom PDF.js Viewer */}
+          {pdfLoading ? (
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                backgroundColor: '#1E293B',
+                borderRadius: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                color: '#FFFFFF',
+                gap: '12px',
+              }}
+            >
+              <div
+                style={{
+                  width: '36px',
+                  height: '36px',
+                  border: '3px solid rgba(255,255,255,0.3)',
+                  borderTopColor: '#FFD45C',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
+                }}
+              />
+              <span style={{ fontSize: '14px', fontWeight: 600 }}>Loading Question Paper PDF...</span>
+            </div>
+          ) : pdfError ? (
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                backgroundColor: '#FFFFFF',
+                borderRadius: '12px',
+                border: '1px solid #E2E8F0',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                padding: '32px',
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: '36px', marginBottom: '12px' }}>⚠️</div>
+              <h3 style={{ color: '#DC2626', fontSize: '18px', fontWeight: 800, margin: '0 0 8px' }}>
+                Unable to Load Question Paper
+              </h3>
+              <p style={{ color: '#64748B', fontSize: '13px', maxWidth: '420px', margin: '0 0 16px' }}>
+                {pdfError}
+              </p>
+              <button
+                type="button"
+                onClick={() => loadPdf()}
+                style={{
+                  padding: '8px 18px',
+                  backgroundColor: '#0B2E6F',
+                  color: '#FFFFFF',
+                  borderRadius: '8px',
+                  border: 'none',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                Retry Loading
+              </button>
+            </div>
+          ) : (
+            <SecurePdfViewer
+              pdfBlob={pdfBlob}
+              candidateName={attempt.candidate_name || 'Candidate'}
+              candidateIdentifier={attempt.candidate_register_number || attempt.college || ''}
+              assessmentCode={attempt.assessment_code}
+              attemptId={attempt.id}
+              onLoadError={(err) => setPdfError(err)}
+            />
+          )}
+        </div>
+      ) : (
       <div
         style={{
           flex: 1,
@@ -1916,6 +2125,7 @@ export function AssessmentExamPage() {
           </div>
         </aside>
       </div>
+      )}
 
       {/* ─── 3. SUBMISSION CONFIRMATION MODAL ─────────────────────────── */}
       {showSubmitModal && (
@@ -1952,51 +2162,82 @@ export function AssessmentExamPage() {
             >
               Confirm Final Submission
             </h3>
-            <p
-              style={{
-                fontSize: '14px',
-                color: '#4B5563',
-                marginBottom: '16px',
-                lineHeight: 1.5,
-              }}
-            >
-              You have answered <strong>{answeredCount}</strong> of{' '}
-              {attempt?.questions?.length || attempt?.total_questions || 50} questions (
-              <strong>
-                {Math.max(
-                  0,
-                  (attempt?.questions?.length || attempt?.total_questions || 50) - answeredCount
-                )}
-              </strong>{' '}
-              unattempted). Once submitted, answers cannot be modified. Are you sure you wish to
-              finalize your assessment?
-            </p>
+            {isPdfCoding ? (
+              <>
+                <p
+                  style={{
+                    fontSize: '14px',
+                    color: '#4B5563',
+                    marginBottom: '16px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Please ensure you have written all your code and answers on your physical paper answer sheets. Once submitted, your online session will conclude and your timer will stop.
+                </p>
+                <div
+                  style={{
+                    backgroundColor: '#EDE9FE',
+                    borderRadius: '8px',
+                    padding: '12px 16px',
+                    marginBottom: '20px',
+                    fontSize: '13px',
+                    color: '#5B21B6',
+                    textAlign: 'center',
+                    fontWeight: 600,
+                  }}
+                >
+                  ✍️ Hand in your physical answer sheet to the invigilator after submitting.
+                </div>
+              </>
+            ) : (
+              <>
+                <p
+                  style={{
+                    fontSize: '14px',
+                    color: '#4B5563',
+                    marginBottom: '16px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  You have answered <strong>{answeredCount}</strong> of{' '}
+                  {attempt?.questions?.length || attempt?.total_questions || 50} questions (
+                  <strong>
+                    {Math.max(
+                      0,
+                      (attempt?.questions?.length || attempt?.total_questions || 50) - answeredCount
+                    )}
+                  </strong>{' '}
+                  unattempted). Once submitted, answers cannot be modified. Are you sure you wish to
+                  finalize your assessment?
+                </p>
 
-            <div
-              style={{
-                backgroundColor: '#FAF7F3',
-                borderRadius: '8px',
-                padding: '12px 16px',
-                marginBottom: '20px',
-                fontSize: '12px',
-                color: '#374151',
-                display: 'flex',
-                justifyContent: 'space-around',
-              }}
-            >
-              <div>
-                Answered: <strong style={{ color: '#16A34A' }}>{answeredCount}</strong>
-              </div>
-              <div>
-                Pending: <strong style={{ color: '#D97706' }}>{50 - answeredCount}</strong>
-              </div>
-              <div>
-                Bookmarked:{' '}
-                <strong style={{ color: '#1455B8' }}>
-                  {Object.values(markedForLater).filter(Boolean).length}
-                </strong>
-              </div>
-            </div>
+                <div
+                  style={{
+                    backgroundColor: '#FAF7F3',
+                    borderRadius: '8px',
+                    padding: '12px 16px',
+                    marginBottom: '20px',
+                    fontSize: '12px',
+                    color: '#374151',
+                    display: 'flex',
+                    justifyContent: 'space-around',
+                  }}
+                >
+                  <div>
+                    Answered: <strong style={{ color: '#16A34A' }}>{answeredCount}</strong>
+                  </div>
+                  <div>
+                    Pending: <strong style={{ color: '#D97706' }}>{50 - answeredCount}</strong>
+                  </div>
+                  <div>
+                    Bookmarked:{' '}
+                    <strong style={{ color: '#1455B8' }}>
+                      {Object.values(markedForLater).filter(Boolean).length}
+                    </strong>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button
@@ -2029,7 +2270,7 @@ export function AssessmentExamPage() {
                   cursor: submitting ? 'not-allowed' : 'pointer',
                 }}
               >
-                {submitting ? 'Submitting & Scoring...' : 'Yes, Submit Test'}
+                {submitting ? (isPdfCoding ? 'Finalizing Session...' : 'Submitting & Scoring...') : (isPdfCoding ? 'Yes, Finish Assessment' : 'Yes, Submit Test')}
               </button>
             </div>
           </div>

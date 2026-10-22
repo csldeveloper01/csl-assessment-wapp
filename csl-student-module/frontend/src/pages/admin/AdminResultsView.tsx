@@ -345,8 +345,13 @@ export function AdminResultsView({ onReviewAttempt }: AdminResultsViewProps) {
                     </td>
                     <td style={{ padding: '12px 16px' }}>
                       <div style={{ fontWeight: 700, color: '#0B2E6F' }}>{res.candidate_name}</div>
-                      <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px' }}>
-                        {res.department} • {res.year_of_study}
+                      <div style={{ fontSize: '11px', color: '#64748B', marginTop: '2px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        <span>{res.department} • {res.year_of_study}</span>
+                        {res.delivery_mode === 'PDF_CODING' && (
+                          <span style={{ backgroundColor: '#EDE9FE', color: '#6D28D9', fontSize: '10px', fontWeight: 700, padding: '1px 6px', borderRadius: '4px' }}>
+                            PDF Mode
+                          </span>
+                        )}
                       </div>
                     </td>
                     <td style={{ padding: '12px 16px', fontFamily: 'monospace', fontWeight: 700, color: '#1E293B' }}>
@@ -361,46 +366,91 @@ export function AdminResultsView({ onReviewAttempt }: AdminResultsViewProps) {
                       {res.college}
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700, color: '#1455B8' }}>
-                      <span style={{ backgroundColor: '#EFF6FF', padding: '2px 8px', borderRadius: '4px' }}>
-                        {res.aptitude_score}
-                      </span>
+                      {res.delivery_mode === 'PDF_CODING' || res.is_manual_evaluation_pending ? (
+                        <span style={{ color: '#94A3B8' }}>—</span>
+                      ) : (
+                        <span style={{ backgroundColor: '#EFF6FF', padding: '2px 8px', borderRadius: '4px' }}>
+                          {res.aptitude_score}
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 700, color: '#059669' }}>
-                      <span style={{ backgroundColor: '#ECFDF5', padding: '2px 8px', borderRadius: '4px' }}>
-                        {res.coding_score}
-                      </span>
+                      {res.delivery_mode === 'PDF_CODING' || res.is_manual_evaluation_pending ? (
+                        <span style={{ color: '#94A3B8' }}>—</span>
+                      ) : (
+                        <span style={{ backgroundColor: '#ECFDF5', padding: '2px 8px', borderRadius: '4px' }}>
+                          {res.coding_score}
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'center', fontWeight: 800, color: '#0B2E6F', fontSize: '14px' }}>
-                      {res.total_score} <span style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 500 }}>/ {res.assessment_total_marks ?? 50}</span>
+                      {res.delivery_mode === 'PDF_CODING' || res.is_manual_evaluation_pending ? (
+                        <span style={{ fontSize: '12px', color: '#D97706', fontWeight: 700 }}>Paper Eval</span>
+                      ) : (
+                        <>{res.total_score} <span style={{ fontSize: '11px', color: '#94A3B8', fontWeight: 500 }}>/ {res.assessment_total_marks ?? 50}</span></>
+                      )}
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'center' }}>
-                      <span
-                        style={{
-                          display: 'inline-block',
-                          padding: '3px 8px',
-                          borderRadius: '6px',
-                          fontSize: '12px',
-                          fontWeight: 800,
-                          backgroundColor: isPass ? '#DCFCE7' : '#FEE2E2',
-                          color: isPass ? '#166534' : '#991B1B',
-                        }}
-                      >
-                        {res.percentage}%
-                      </span>
+                      {res.delivery_mode === 'PDF_CODING' || res.is_manual_evaluation_pending ? (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            backgroundColor: '#FEF3C7',
+                            color: '#92400E',
+                          }}
+                        >
+                          Pending
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            display: 'inline-block',
+                            padding: '3px 8px',
+                            borderRadius: '6px',
+                            fontSize: '12px',
+                            fontWeight: 800,
+                            backgroundColor: isPass ? '#DCFCE7' : '#FEE2E2',
+                            color: isPass ? '#166534' : '#991B1B',
+                          }}
+                        >
+                          {res.percentage}%
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '12px 16px' }}>
-                      <span
-                        style={{
-                          padding: '3px 10px',
-                          borderRadius: '9999px',
-                          fontSize: '11px',
-                          fontWeight: 700,
-                          backgroundColor: res.state === 'SUBMITTED' ? '#DCFCE7' : '#FEE2E2',
-                          color: res.state === 'SUBMITTED' ? '#166534' : '#991B1B',
-                        }}
-                      >
-                        {res.state}
-                      </span>
+                      {res.state === 'COMPLETED_PENDING_MANUAL_EVALUATION' || res.is_manual_evaluation_pending ? (
+                        <span
+                          style={{
+                            padding: '3px 10px',
+                            borderRadius: '9999px',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            backgroundColor: '#FEF3C7',
+                            color: '#92400E',
+                            display: 'inline-block',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          Pending Manual Eval
+                        </span>
+                      ) : (
+                        <span
+                          style={{
+                            padding: '3px 10px',
+                            borderRadius: '9999px',
+                            fontSize: '11px',
+                            fontWeight: 700,
+                            backgroundColor: res.state === 'SUBMITTED' ? '#DCFCE7' : '#FEE2E2',
+                            color: res.state === 'SUBMITTED' ? '#166534' : '#991B1B',
+                          }}
+                        >
+                          {res.state}
+                        </span>
+                      )}
                     </td>
                     <td style={{ padding: '12px 16px', textAlign: 'right' }}>
                       <div style={{ display: 'inline-flex', gap: '8px', alignItems: 'center' }}>

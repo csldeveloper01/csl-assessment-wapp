@@ -285,9 +285,15 @@ def select_balanced_questions(
 @transaction.atomic
 def prepare_assessment(assessment: Assessment, user=None):
     """
-    Validates question sufficiency and eligible colleges, transitioning DRAFT -> READY.
+    Validates question sufficiency (for MCQ) or PDF document (for PDF_CODING)
+    and eligible colleges, transitioning DRAFT -> READY.
     """
-    validate_question_bank_sufficiency(assessment=assessment)
+    if assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+        if not hasattr(assessment, "pdf_document") or assessment.pdf_document is None:
+            raise ValidationError({"detail": "Cannot prepare a PDF Coding Assessment without an uploaded PDF question paper."})
+    else:
+        validate_question_bank_sufficiency(assessment=assessment)
+
     if not assessment.eligible_colleges.exists():
         raise ValidationError({"detail": "Assessment must have at least one assigned college before preparation."})
 
@@ -314,7 +320,12 @@ def open_assessment(assessment: Assessment, user=None):
     if assessment.status == Assessment.Status.ARCHIVED:
         raise ValidationError({"detail": f"Cannot open archived assessment '{assessment.title}'. Please unarchive it first."})
 
-    validate_question_bank_sufficiency(assessment=assessment)
+    if assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+        if not hasattr(assessment, "pdf_document") or assessment.pdf_document is None:
+            raise ValidationError({"detail": "Cannot open a PDF Coding Assessment without an uploaded PDF question paper."})
+    else:
+        validate_question_bank_sufficiency(assessment=assessment)
+
     if not assessment.eligible_colleges.exists():
         raise ValidationError({"detail": "Assessment must have at least one assigned college before opening."})
 
@@ -762,6 +773,7 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
             AssessmentAttempt.State.SUBMITTED,
             AssessmentAttempt.State.TIMED_OUT,
             AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+            AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
         ]
     )
     mark("attempt_checks")
@@ -769,6 +781,34 @@ def start_assessment_for_candidate(candidate: Candidate, assessment: Assessment 
     max_allowed = assessment.max_attempts if assessment else config.max_attempts
     if completed_attempts >= max_allowed:
         raise ValidationError({"detail": f"Maximum attempts ({max_allowed}) reached for this assessment."})
+
+    # For PDF Coding mode, skip MCQ question sampling and snapshot generation
+    if assessment and assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+        if not hasattr(assessment, "pdf_document") or assessment.pdf_document is None:
+            raise ValidationError({"detail": "The assessment question paper PDF is currently unavailable. Please contact your administrator."})
+
+        now = timezone.now()
+        duration = assessment.duration_minutes if assessment else config.duration_minutes
+        deadline = now + timedelta(minutes=duration)
+
+        attempt = AssessmentAttempt.objects.create(
+            candidate=locked_candidate,
+            config=config,
+            assessment=assessment,
+            state=AssessmentAttempt.State.IN_PROGRESS,
+            started_at=now,
+            deadline=deadline,
+            last_heartbeat=now,
+            max_disconnection_grace_seconds=600,
+        )
+
+        IntegrityEvent.objects.create(
+            attempt=attempt,
+            event_type=IntegrityEvent.EventType.ATTEMPT_STARTED,
+            metadata={"source": "START_ASSESSMENT", "delivery_mode": "PDF_CODING"},
+        )
+        mark("attempt_created_pdf")
+        return attempt
 
     # Dynamic or legacy question selection
     has_pool_questions = getattr(assessment, "has_pool_questions", None)
@@ -975,6 +1015,8 @@ def save_candidate_answer(attempt_or_id, question_order: int, selected_option: s
             )
             update_ms = (time.perf_counter() - update_start) * 1000.0
             if rows_updated == 0:
+                if locked_attempt.assessment_id and Assessment.objects.filter(id=locked_attempt.assessment_id, delivery_mode=Assessment.DeliveryMode.PDF_CODING).exists():
+                    raise ValidationError({"detail": "Digital answer submission is not supported for PDF Coding Assessments. Answers must be written on paper."})
                 raise ValidationError({"detail": "Invalid question order."})
 
     if is_expired:
@@ -1033,6 +1075,7 @@ def finalize_assessment_attempt(attempt_or_id, final_state=AssessmentAttempt.Sta
         AssessmentAttempt.State.SUBMITTED,
         AssessmentAttempt.State.TIMED_OUT,
         AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+        AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
     ]:
         service_ms = (time.perf_counter() - service_start) * 1000.0
         logger.info(
@@ -1043,8 +1086,51 @@ def finalize_assessment_attempt(attempt_or_id, final_state=AssessmentAttempt.Sta
         )
         return locked_attempt
 
-    scoring_start = time.perf_counter()
     now = timezone.now()
+
+    # PDF_CODING attempt finalization: transition to manual evaluation pending or timeout
+    if locked_attempt.assessment and locked_attempt.assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+        effective_final_state = (
+            AssessmentAttempt.State.TIMED_OUT
+            if (locked_attempt.is_expired() or final_state == AssessmentAttempt.State.TIMED_OUT)
+            else AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION
+        )
+        locked_attempt.state = effective_final_state
+        locked_attempt.aptitude_score = 0
+        locked_attempt.coding_score = 0
+        locked_attempt.total_score = 0
+        locked_attempt.percentage = 0.0
+        locked_attempt.submitted_at = now
+        locked_attempt.save(
+            update_fields=[
+                "state",
+                "aptitude_score",
+                "coding_score",
+                "total_score",
+                "percentage",
+                "submitted_at",
+                "updated_at",
+            ]
+        )
+        IntegrityEvent.objects.create(
+            attempt=locked_attempt,
+            event_type=(
+                IntegrityEvent.EventType.TIMED_OUT
+                if effective_final_state == AssessmentAttempt.State.TIMED_OUT
+                else IntegrityEvent.EventType.SUBMITTED
+            ),
+            metadata={"delivery_mode": "PDF_CODING", "final_state": effective_final_state, "manual_evaluation_pending": True},
+        )
+        service_ms = (time.perf_counter() - service_start) * 1000.0
+        logger.info(
+            "ASSESSMENT_FINALIZE_TIMING lock_ms=%.1f scoring_ms=0.0 write_ms=0.0 service_ms=%.1f final_state=%s",
+            lock_ms,
+            service_ms,
+            effective_final_state,
+        )
+        return locked_attempt
+
+    scoring_start = time.perf_counter()
 
     # Dynamic section marks lookup (single query without redundant .exists() call)
     marks_map = {}
