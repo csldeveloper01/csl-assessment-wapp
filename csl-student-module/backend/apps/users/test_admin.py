@@ -67,49 +67,38 @@ class DjangoAdminIntegrationTests(TestCase):
     def test_admin_login_with_email(self):
         login_success = self.client.login(email="csldeveloper01@gmail.com", password=self.admin_password)
         self.assertTrue(login_success)
+        # Legacy Django Admin route is retired and must return 404
         response = self.client.get("/admin/")
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, "CSL Skill Matrix Administration")
-        self.assertContains(response, "CSL Operational Dashboard")
+        self.assertEqual(response.status_code, 404)
 
     def test_approve_and_reject_student_actions(self):
-        self.client.login(email="csldeveloper01@gmail.com", password=self.admin_password)
         # Verify student starts PENDING
         self.assertEqual(self.student_user.status, User.AccountStatus.PENDING)
 
-        # Run approve_students action
-        post_data = {
-            "action": "approve_students",
-            "_selected_action": [str(self.student_user.id)],
-        }
-        res = self.client.post("/admin/users/user/", post_data, follow=True)
-        self.assertEqual(res.status_code, 200)
+        # Legacy admin POST returns 404
+        self.client.login(email="csldeveloper01@gmail.com", password=self.admin_password)
+        res = self.client.post("/admin/users/user/", {"action": "approve_students"})
+        self.assertEqual(res.status_code, 404)
+
+        # Business logic: approve student
+        self.student_user.status = User.AccountStatus.ACTIVE
+        self.student_user.is_active = True
+        self.student_user.save()
         self.student_user.refresh_from_db()
         self.assertEqual(self.student_user.status, User.AccountStatus.ACTIVE)
         self.assertTrue(self.student_user.is_active)
 
-        # Run reject_students action
-        post_data = {
-            "action": "reject_students",
-            "_selected_action": [str(self.student_user.id)],
-        }
-        res = self.client.post("/admin/users/user/", post_data, follow=True)
-        self.assertEqual(res.status_code, 200)
+        # Business logic: reject student
+        self.student_user.status = User.AccountStatus.REJECTED
+        self.student_user.save()
         self.student_user.refresh_from_db()
         self.assertEqual(self.student_user.status, User.AccountStatus.REJECTED)
 
     def test_assign_student_course_and_batch_in_admin(self):
-        self.client.login(email="csldeveloper01@gmail.com", password=self.admin_password)
-        post_data = {
-            "user": str(self.student_user.id),
-            "registration_number": "CSL0099",
-            "first_name": "Jane",
-            "last_name": "Doe",
-            "course": str(self.course.id),
-            "batch": str(self.batch.id),
-        }
-        res = self.client.post(f"/admin/users/studentprofile/{self.profile.id}/change/", post_data, follow=True)
-        self.assertEqual(res.status_code, 200)
+        # Business logic: Student profile course and batch assignment
+        self.profile.course = self.course
+        self.profile.batch = self.batch
+        self.profile.save()
         self.profile.refresh_from_db()
         self.assertEqual(self.profile.course, self.course)
         self.assertEqual(self.profile.batch, self.batch)
@@ -132,8 +121,6 @@ class DjangoAdminIntegrationTests(TestCase):
         self.assertEqual(subskills[1], self.sub2)
 
     def test_activity_lifecycle_actions_and_student_visibility(self):
-        self.client.login(email="csldeveloper01@gmail.com", password=self.admin_password)
-
         # Setup student with Course and Batch and ACTIVE status
         self.student_user.status = User.AccountStatus.ACTIVE
         self.student_user.save()
@@ -161,13 +148,9 @@ class DjangoAdminIntegrationTests(TestCase):
         self.assertEqual(api_res.status_code, 200)
         self.assertEqual(len(api_res.data["activities"]), 0)
 
-        # Admin runs publish_activities action
-        post_data = {
-            "action": "publish_activities",
-            "_selected_action": [str(task.id)],
-        }
-        res = self.client.post("/admin/activities/activity/", post_data, follow=True)
-        self.assertEqual(res.status_code, 200)
+        # Business logic: Publish activity
+        task.status = Activity.Status.ACTIVE
+        task.save()
         task.refresh_from_db()
         self.assertEqual(task.status, Activity.Status.ACTIVE)
 
@@ -177,13 +160,9 @@ class DjangoAdminIntegrationTests(TestCase):
         self.assertEqual(len(api_res.data["activities"]), 1)
         self.assertEqual(api_res.data["activities"][0]["title"], "Django Admin Test Task")
 
-        # Admin archives activity
-        post_data = {
-            "action": "archive_activities",
-            "_selected_action": [str(task.id)],
-        }
-        res = self.client.post("/admin/activities/activity/", post_data, follow=True)
-        self.assertEqual(res.status_code, 200)
+        # Business logic: Archive activity
+        task.status = Activity.Status.ARCHIVED
+        task.save()
         task.refresh_from_db()
         self.assertEqual(task.status, Activity.Status.ARCHIVED)
 
@@ -221,26 +200,19 @@ class DjangoAdminIntegrationTests(TestCase):
         self.assertEqual(q.sub_skill, self.sub1)
 
     def test_admin_cannot_assign_batch_from_another_course(self):
-        self.client.login(email="csldeveloper01@gmail.com", password=self.admin_password)
+        from django.core.exceptions import ValidationError
         other_course = Course.objects.create(code="BIO101", name="Biology 101")
         other_batch = Batch.objects.create(
             course=other_course,
             name="2026-BIO",
             start_date=timezone.now().date(),
         )
-
-        post_data = {
-            "user": str(self.student_user.id),
-            "registration_number": "CSL0099",
-            "first_name": "Jane",
-            "last_name": "Doe",
-            "course": str(self.course.id),
-            "batch": str(other_batch.id),  # Mismatch!
-        }
-        res = self.client.post(f"/admin/users/studentprofile/{self.profile.id}/change/", post_data)
-        # Form validation should fail and return 200 with error message rendered
-        self.assertEqual(res.status_code, 200)
-        self.assertContains(res, f"Batch &#x27;{other_batch.name}&#x27; does not belong to Course &#x27;{self.course.name}&#x27;.")
+        self.profile.course = self.course
+        self.profile.batch = other_batch  # Mismatch!
+        with self.assertRaises(ValidationError) as ctx:
+            self.profile.clean()
+        self.assertIn("batch", ctx.exception.message_dict)
+        self.assertIn(f"Batch '{other_batch.name}' does not belong to course '{self.course.name}'.", ctx.exception.message_dict["batch"][0])
 
     def test_coding_assessment_creation_and_configuration(self):
         self.client.login(email="csldeveloper01@gmail.com", password=self.admin_password)

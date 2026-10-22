@@ -553,19 +553,24 @@ class ComprehensiveAssessmentTests(TestCase):
         )
         self.client.force_login(admin)
 
-        res = self.client.get("/admin/")
+        # Legacy Django Admin route /admin/ is retired and returns 404
+        res_admin = self.client.get("/admin/")
+        self.assertEqual(res_admin.status_code, 404)
+
+        # Active diagnostic metrics are served via the React Admin API endpoint
+        res = self.client.get("/api/csl-admin/stats/")
         self.assertEqual(res.status_code, 200)
-        self.assertIn("assessment_candidates_count", res.context)
-        self.assertIn("assessment_in_progress_count", res.context)
-        self.assertIn("assessment_submitted_count", res.context)
-        self.assertIn("assessment_timed_out_count", res.context)
-        self.assertIn("assessment_flagged_count", res.context)
-        self.assertIn("assessment_aptitude_questions_count", res.context)
-        self.assertIn("assessment_coding_questions_count", res.context)
-        self.assertIn("assessment_total_questions_count", res.context)
-        self.assertEqual(res.context["assessment_total_questions_count"], 60)
-        self.assertEqual(res.context["assessment_aptitude_questions_count"], 30)
-        self.assertEqual(res.context["assessment_coding_questions_count"], 30)
+        self.assertIn("candidates_count", res.data)
+        self.assertIn("in_progress_count", res.data)
+        self.assertIn("submitted_count", res.data)
+        self.assertIn("timed_out_count", res.data)
+        self.assertIn("flagged_count", res.data)
+        self.assertIn("aptitude_questions_count", res.data)
+        self.assertIn("coding_questions_count", res.data)
+        self.assertIn("total_questions_count", res.data)
+        self.assertEqual(res.data["total_questions_count"], 60)
+        self.assertEqual(res.data["aptitude_questions_count"], 30)
+        self.assertEqual(res.data["coding_questions_count"], 30)
 
     def test_assessment_config_model_validation(self):
         # Invalid duration

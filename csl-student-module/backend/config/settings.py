@@ -256,6 +256,9 @@ if _ssl_redirect:
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
 
+SECURE_CONTENT_TYPE_NOSNIFF = True
+X_FRAME_OPTIONS = 'DENY'
+
 # Configure connection pooling / persistence for PostgreSQL in production
 if 'postgresql' in DATABASES['default'].get('ENGINE', ''):
     DATABASES['default']['CONN_MAX_AGE'] = int(os.getenv('DATABASE_CONN_MAX_AGE', '60'))
@@ -299,5 +302,6 @@ LOGGING = {
     },
 }
 
-# Django Admin interface toggle (can be disabled in production via environment variable)
-DJANGO_ADMIN_ENABLED = os.getenv('DJANGO_ADMIN_ENABLED', 'True').strip().lower() in ('true', '1', 'yes')
+# Legacy Django Admin HTTP routing is permanently retired.
+# The active administration portal is the React CSL Admin Portal (/csl-admin backed by /api/csl-admin/).
+DJANGO_ADMIN_ENABLED = False
