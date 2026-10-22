@@ -744,8 +744,8 @@ class AssessmentAuditLog(models.Model):
 class AssessmentPdfDocument(models.Model):
     """
     Durable storage for assessment question paper PDF.
-    Supports local FileField storage and in-database binary backup for resilience
-    against Render ephemeral container reboots.
+    Supports Neon Object Storage / S3 backend, local FileField storage,
+    and optional database binary backup for local dev resilience.
     """
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     assessment = models.OneToOneField(
@@ -756,6 +756,8 @@ class AssessmentPdfDocument(models.Model):
     )
     file = models.FileField(upload_to="assessment_pdfs/", null=True, blank=True)
     binary_data = models.BinaryField(null=True, blank=True, help_text="Durable storage copy for ephemeral container resilience")
+    s3_key = models.CharField(max_length=512, blank=True, null=True, help_text="Object key in S3-compatible Neon storage")
+    s3_bucket = models.CharField(max_length=255, blank=True, null=True, help_text="S3 bucket name")
     original_filename = models.CharField(max_length=255, help_text="Sanitized original upload filename")
     file_size = models.PositiveIntegerField(help_text="File size in bytes")
     sha256 = models.CharField(max_length=64, db_index=True, help_text="SHA-256 content checksum")
@@ -775,12 +777,38 @@ class AssessmentPdfDocument(models.Model):
     def __str__(self):
         return f"PDF for {self.assessment.code} ({self.original_filename})"
 
+    def delete(self, *args, **kwargs):
+        if self.s3_key:
+            try:
+                from .storage_service import AssessmentPdfStorageService
+                AssessmentPdfStorageService.delete_pdf_object(self.s3_key, self.s3_bucket)
+            except Exception:
+                pass
+        if self.file:
+            try:
+                self.file.delete(save=False)
+            except Exception:
+                pass
+        super().delete(*args, **kwargs)
+
     def get_file_bytes(self) -> bytes:
         """
-        Retrieves raw PDF bytes. First checks the FileField on disk/storage;
-        if missing (e.g. following Render ephemeral container reboot),
-        re-hydrates transparently from the durable binary_data column.
+        Retrieves raw PDF bytes. Checks:
+        1. S3 / Neon Object Storage if s3_key is present and storage is configured.
+        2. Local disk file if available.
+        3. Durable binary_data database column fallback.
         """
+        if self.s3_key:
+            try:
+                from .storage_service import AssessmentPdfStorageService
+                if AssessmentPdfStorageService.is_configured():
+                    data = AssessmentPdfStorageService.get_pdf_bytes(self.s3_key, self.s3_bucket)
+                    if data:
+                        return data
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning("Failed to read PDF from S3 key %s: %s", self.s3_key, e)
+
         if self.file:
             try:
                 self.file.open("rb")

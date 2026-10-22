@@ -421,8 +421,12 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
                     errors["pdf_file"] = err_msg
                 else:
                     self._validated_pdf_metadata = meta
-            elif self.instance and not hasattr(self.instance, "pdf_document"):
-                errors["pdf_file"] = "This assessment does not have an attached PDF question paper. Please upload a PDF."
+            elif self.instance:
+                # If updating an assessment, check if it already has a PDF attached
+                has_pdf = hasattr(self.instance, "pdf_document") and self.instance.pdf_document is not None
+                target_status = data.get("status", self.instance.status)
+                if target_status in [Assessment.Status.READY, Assessment.Status.OPEN] and not has_pdf:
+                    errors["pdf_file"] = "This assessment does not have an attached PDF question paper. Please upload a PDF before preparing or opening."
 
             if total < 1:
                 errors["total_marks"] = "Total marks must be at least 1."
@@ -487,30 +491,48 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
             meta = self._validated_pdf_metadata
             req = self.context.get("request")
             user = req.user if (req and hasattr(req, "user") and getattr(req.user, "is_authenticated", False)) else None
-            safe_fname = f"assessment_{assessment.id}_{uuid.uuid4().hex[:8]}.pdf"
+            from .storage_service import AssessmentPdfStorageService
 
-            pdf_doc = AssessmentPdfDocument.objects.create(
-                assessment=assessment,
+            storage_meta = AssessmentPdfStorageService.save_pdf(
+                assessment_id=assessment.id,
+                raw_bytes=meta["raw_bytes"],
                 original_filename=meta["original_filename"],
-                file_size=meta["file_size"],
-                sha256=meta["sha256"],
-                content_type=meta["content_type"],
-                binary_data=meta["raw_bytes"],
-                uploaded_by=user,
             )
-            pdf_doc.file.save(safe_fname, ContentFile(meta["raw_bytes"]), save=True)
+            new_s3_key = storage_meta.get("s3_key")
+            new_s3_bucket = storage_meta.get("s3_bucket")
 
-            log_assessment_audit(
-                action=AssessmentAuditLog.Action.PDF_UPLOADED,
-                entity_type="ASSESSMENT",
-                entity_id=str(assessment.id),
-                user=user,
-                details={
-                    "filename": meta["original_filename"],
-                    "file_size": meta["file_size"],
-                    "sha256": meta["sha256"],
-                },
-            )
+            try:
+                pdf_doc = AssessmentPdfDocument.objects.create(
+                    assessment=assessment,
+                    original_filename=meta["original_filename"],
+                    file_size=meta["file_size"],
+                    sha256=meta["sha256"],
+                    content_type=meta["content_type"],
+                    binary_data=None if new_s3_key else meta["raw_bytes"],
+                    s3_key=new_s3_key,
+                    s3_bucket=new_s3_bucket,
+                    uploaded_by=user,
+                )
+                if not new_s3_key:
+                    safe_fname = f"assessment_{assessment.id}_{uuid.uuid4().hex[:8]}.pdf"
+                    pdf_doc.file.save(safe_fname, ContentFile(meta["raw_bytes"]), save=True)
+
+                log_assessment_audit(
+                    action=AssessmentAuditLog.Action.PDF_UPLOADED,
+                    entity_type="ASSESSMENT",
+                    entity_id=str(assessment.id),
+                    user=user,
+                    details={
+                        "filename": meta["original_filename"],
+                        "file_size": meta["file_size"],
+                        "sha256": meta["sha256"],
+                        "storage_type": storage_meta.get("storage_type"),
+                    },
+                )
+            except Exception:
+                if new_s3_key:
+                    AssessmentPdfStorageService.delete_pdf_object(new_s3_key, new_s3_bucket)
+                raise
 
         return assessment
 
@@ -536,41 +558,70 @@ class AdminAssessmentCreateUpdateSerializer(serializers.ModelSerializer):
             meta = self._validated_pdf_metadata
             req = self.context.get("request")
             user = req.user if (req and hasattr(req, "user") and getattr(req.user, "is_authenticated", False)) else None
-            safe_fname = f"assessment_{assessment.id}_{uuid.uuid4().hex[:8]}.pdf"
+            from django.db import transaction
+            from .storage_service import AssessmentPdfStorageService
 
-            pdf_doc, created = AssessmentPdfDocument.objects.get_or_create(
-                assessment=assessment,
-                defaults={
-                    "original_filename": meta["original_filename"],
-                    "file_size": meta["file_size"],
-                    "sha256": meta["sha256"],
-                    "content_type": meta["content_type"],
-                    "binary_data": meta["raw_bytes"],
-                    "uploaded_by": user,
-                },
+            storage_meta = AssessmentPdfStorageService.save_pdf(
+                assessment_id=assessment.id,
+                raw_bytes=meta["raw_bytes"],
+                original_filename=meta["original_filename"],
             )
-            if not created:
-                pdf_doc.original_filename = meta["original_filename"]
-                pdf_doc.file_size = meta["file_size"]
-                pdf_doc.sha256 = meta["sha256"]
-                pdf_doc.content_type = meta["content_type"]
-                pdf_doc.binary_data = meta["raw_bytes"]
-                pdf_doc.uploaded_by = user
-                pdf_doc.save()
+            new_s3_key = storage_meta.get("s3_key")
+            new_s3_bucket = storage_meta.get("s3_bucket")
 
-            pdf_doc.file.save(safe_fname, ContentFile(meta["raw_bytes"]), save=True)
+            pdf_doc = getattr(assessment, "pdf_document", None)
+            old_s3_key = pdf_doc.s3_key if pdf_doc else None
+            old_s3_bucket = pdf_doc.s3_bucket if pdf_doc else None
+            created = False
 
-            log_assessment_audit(
-                action=AssessmentAuditLog.Action.PDF_REPLACED if not created else AssessmentAuditLog.Action.PDF_UPLOADED,
-                entity_type="ASSESSMENT",
-                entity_id=str(assessment.id),
-                user=user,
-                details={
-                    "filename": meta["original_filename"],
-                    "file_size": meta["file_size"],
-                    "sha256": meta["sha256"],
-                },
-            )
+            try:
+                if not pdf_doc:
+                    pdf_doc = AssessmentPdfDocument.objects.create(
+                        assessment=assessment,
+                        original_filename=meta["original_filename"],
+                        file_size=meta["file_size"],
+                        sha256=meta["sha256"],
+                        content_type=meta["content_type"],
+                        binary_data=None if new_s3_key else meta["raw_bytes"],
+                        s3_key=new_s3_key,
+                        s3_bucket=new_s3_bucket,
+                        uploaded_by=user,
+                    )
+                    created = True
+                else:
+                    pdf_doc.original_filename = meta["original_filename"]
+                    pdf_doc.file_size = meta["file_size"]
+                    pdf_doc.sha256 = meta["sha256"]
+                    pdf_doc.content_type = meta["content_type"]
+                    pdf_doc.s3_key = new_s3_key
+                    pdf_doc.s3_bucket = new_s3_bucket
+                    pdf_doc.binary_data = None if new_s3_key else meta["raw_bytes"]
+                    pdf_doc.uploaded_by = user
+                    pdf_doc.save()
+
+                if not new_s3_key:
+                    safe_fname = f"assessment_{assessment.id}_{uuid.uuid4().hex[:8]}.pdf"
+                    pdf_doc.file.save(safe_fname, ContentFile(meta["raw_bytes"]), save=True)
+
+                if old_s3_key and old_s3_key != new_s3_key:
+                    transaction.on_commit(lambda: AssessmentPdfStorageService.delete_pdf_object(old_s3_key, old_s3_bucket))
+
+                log_assessment_audit(
+                    action=AssessmentAuditLog.Action.PDF_REPLACED if not created else AssessmentAuditLog.Action.PDF_UPLOADED,
+                    entity_type="ASSESSMENT",
+                    entity_id=str(assessment.id),
+                    user=user,
+                    details={
+                        "filename": meta["original_filename"],
+                        "file_size": meta["file_size"],
+                        "sha256": meta["sha256"],
+                        "storage_type": storage_meta.get("storage_type"),
+                    },
+                )
+            except Exception:
+                if new_s3_key:
+                    AssessmentPdfStorageService.delete_pdf_object(new_s3_key, new_s3_bucket)
+                raise
 
         return assessment
 

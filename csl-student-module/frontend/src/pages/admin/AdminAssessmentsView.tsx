@@ -498,19 +498,40 @@ export function AdminAssessmentsView({
 
     setCreateSubmitting(true);
     try {
-      const created = await createAdminAssessment({
-        ...createForm,
-        code: createForm.code.trim().toUpperCase(),
-        delivery_mode: createDeliveryMode,
-        total_marks: totalMarks,
-        aptitude_count: createDeliveryMode === 'PDF_CODING' ? 0 : (aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2))),
-        coding_count: createDeliveryMode === 'PDF_CODING' ? 0 : (codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2))),
-        sections: payloadSections,
-      });
+      if (createDeliveryMode === 'PDF_CODING') {
+        const formData = new FormData();
+        formData.append('code', createForm.code.trim().toUpperCase());
+        formData.append('title', createForm.title.trim());
+        formData.append('description', createForm.description || '');
+        formData.append('delivery_mode', 'PDF_CODING');
+        formData.append('duration_minutes', String(createForm.duration_minutes));
+        formData.append('total_marks', String(totalMarks));
+        formData.append('aptitude_count', '0');
+        formData.append('coding_count', '0');
+        formData.append('max_attempts', String(createForm.max_attempts));
+        formData.append('max_tab_switches_warning', String(createForm.max_tab_switches_warning));
+        formData.append('auto_submit_on_tab_limit', String(createForm.auto_submit_on_tab_limit));
+        formData.append('close_policy', createForm.close_policy);
+        if (createPdfFile) {
+          formData.append('pdf_file', createPdfFile);
+        }
+        createForm.eligible_college_ids.forEach((cid) => {
+          formData.append('eligible_college_ids', String(cid));
+        });
 
-      if (createDeliveryMode === 'PDF_CODING' && createPdfFile) {
-        await uploadAdminAssessmentPdf(created.id, createPdfFile);
+        await createAdminAssessment(formData);
+      } else {
+        await createAdminAssessment({
+          ...createForm,
+          code: createForm.code.trim().toUpperCase(),
+          delivery_mode: createDeliveryMode,
+          total_marks: totalMarks,
+          aptitude_count: aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2)),
+          coding_count: codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2)),
+          sections: payloadSections,
+        });
       }
+
       setShowCreateModal(false);
       fetchAssessments();
       setActionMessage({ text: `Assessment "${createForm.title}" created successfully in DRAFT state.`, type: 'success' });

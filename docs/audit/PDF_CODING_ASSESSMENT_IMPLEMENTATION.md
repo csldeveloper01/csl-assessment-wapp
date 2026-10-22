@@ -4,7 +4,7 @@
 **Branch:** `phase-1-testing`  
 **Date:** October 2026  
 **Auditor / Engineer:** Advanced Agentic Pair Programmer (DeepMind)  
-**Status:** Completed & Validated (`130/130` Backend Tests Passed, Vite Client Built Cleanly)
+**Status:** Completed, Diagnosed & Validated (`133/133` Backend Tests Passed, Vite Client Built Cleanly)
 
 ---
 
@@ -49,23 +49,34 @@ COMPLETED_PENDING_MANUAL_EVALUATION = "COMPLETED_PENDING_MANUAL_EVALUATION", "Co
 - Total score and percentage remain `0.00` with `is_manual_evaluation_pending = True` until manual grades are entered by faculty/invigilators.
 - Candidate results page and admin review screens clearly display `Pending Manual Evaluation` rather than a misleading zero score.
 
-### 2.3 Durable PDF Storage (`AssessmentPdfDocument`)
-Render Free containers operate on an ephemeral filesystem that is wiped on every deployment or spin-down. To prevent lost question papers without introducing heavy third-party S3 dependencies, a dual-layer strategy was implemented:
+### 2.3 Durable PDF Storage & Neon Object Storage (`AssessmentPdfDocument`)
+Render Web Services operate on an ephemeral filesystem that is wiped on redeployments or container restarts. To ensure durable, scalable storage without bloating PostgreSQL `bytea` columns or backup sizes:
+
+1. **Neon Object Storage / S3-compatible Backend (`boto3`):**
+   - Question papers are stored in private, branch-aware Neon Object Storage (or AWS S3).
+   - Only the server-generated `s3_key`, `s3_bucket`, and file metadata are persisted in PostgreSQL.
+   - When S3 is active, `binary_data` is set to `None` to prevent database memory and storage bloat.
+2. **Orphan Cleanup & Atomic Rollback:**
+   - If an S3 upload succeeds but a database transaction error or rollback occurs, `AssessmentPdfStorageService.delete_pdf_object` immediately purges the orphaned object.
+   - On PDF replacement, old S3 objects are scheduled for deletion via `transaction.on_commit`.
+   - On assessment deletion, associated S3 files are automatically deleted.
+3. **Local Dev / Offline Test Fallback:**
+   - If S3 credentials are not configured in environment variables, the system transparently falls back to local disk storage and database binary backup, enabling test suites to pass offline with zero external network dependencies.
 
 ```python
 class AssessmentPdfDocument(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     assessment = models.OneToOneField(Assessment, on_delete=models.CASCADE, related_name="pdf_document")
-    file = models.FileField(upload_to="assessment_pdfs/%Y/%m/")
-    binary_data = models.BinaryField(help_text="Database byte backup ensuring survival across Render container restarts.")
+    file = models.FileField(upload_to="assessment_pdfs/", null=True, blank=True)
+    binary_data = models.BinaryField(null=True, blank=True)
+    s3_key = models.CharField(max_length=512, blank=True, null=True)
+    s3_bucket = models.CharField(max_length=255, blank=True, null=True)
     original_filename = models.CharField(max_length=255)
-    file_size_bytes = models.PositiveIntegerField()
-    sha256_hash = models.CharField(max_length=64)
+    file_size = models.PositiveIntegerField()
+    sha256 = models.CharField(max_length=64, db_index=True)
+    content_type = models.CharField(max_length=100, default="application/pdf")
     uploaded_at = models.DateTimeField(auto_now_add=True)
 ```
-When `get_file_bytes()` is called:
-- It first checks disk storage.
-- If missing due to a container restart or redeploy, it transparently recovers the raw bytes from Neon PostgreSQL and caches them back to disk.
 
 ---
 
@@ -171,3 +182,47 @@ To deactivate PDF mode after the coding drive:
    ```
 2. Existing PDF assessments and attempts remain archived in the database for auditing and grade entry.
 3. Creating new PDF assessments or switching existing ones is immediately rejected with `400 Bad Request`.
+
+
+---
+
+## 8. Root Cause Analysis of PDF Upload Failure & Fixes
+
+### 8.1 Identified Failure Points
+1. **Frontend-Backend Contract Mismatch (One-step vs. Two-step Flow):**
+   - In `AdminAssessmentListView.post()`, `AdminAssessmentCreateUpdateSerializer` required `pdf_file` to be present during assessment creation if `delivery_mode == 'PDF_CODING'`.
+   - However, the frontend `AdminAssessmentsView.tsx` sent a JSON payload to `createAdminAssessment` (which did not contain `pdf_file`), intending to upload the PDF in a secondary step via `uploadAdminAssessmentPdf`.
+   - The backend immediately returned `HTTP 400 Bad Request` with `{"pdf_file": "A valid PDF question paper must be uploaded..."}`, terminating the process before the upload endpoint could ever be called.
+2. **Missing Request Context in Admin Views:**
+   - `AdminAssessmentListView.post()` and `AdminAssessmentDetailView.patch()` instantiated `AdminAssessmentCreateUpdateSerializer(data=request.data)` without `context={"request": request}`. Consequently, `self.context.get("request")` was `None`, preventing serializer access to `request.FILES`.
+3. **Database Bloat & Ephemeral Disk Vulnerability:**
+   - Storing PDF bytes directly in PostgreSQL `bytea` columns causes table bloat, slower vacuuming, and larger backups, while Render's local filesystem is ephemeral across container restarts.
+
+### 8.2 Architectural Resolutions
+1. **Atomic Multipart Creation in UI & API:**
+   - Updated `createAdminAssessment` in `frontend/src/api/admin.ts` to accept `FormData`.
+   - Updated `AdminAssessmentsView.tsx` to build and transmit `FormData` containing the file directly to `POST /api/csl-admin/assessments/`, attaching the PDF atomically on creation.
+2. **Flexible Serializer Validation:**
+   - Passed `context={"request": request}` in both list and detail admin views.
+   - Allowed updates to `delivery_mode = 'PDF_CODING'` in `DRAFT` status while strictly requiring an uploaded PDF document before transitioning to `READY` or `OPEN`.
+3. **Neon Object Storage via `boto3`:**
+   - Created `AssessmentPdfStorageService` implementing S3-compatible upload, streaming, and deletion.
+   - Stored only `s3_key` and `s3_bucket` in PostgreSQL when S3 credentials are present.
+   - Added automatic rollback cleanup to prevent orphaned S3 objects.
+   - Candidate streaming endpoint `CandidateAttemptPdfDownloadView` fetches bytes securely with server-side credentials and streams them with `nosniff` and `private, no-cache` security headers.
+
+---
+
+## 9. Required Neon Object Storage Environment Variables
+
+Configure the following variables in the backend environment on Render / Neon:
+
+| Environment Variable | Description | Example / Format |
+|---|---|---|
+| `NEON_STORAGE_ENDPOINT_URL` | Neon S3-compatible API endpoint | `https://<branch_id>.storage.<cell>.<region>.aws.neon.tech` |
+| `NEON_STORAGE_ACCESS_KEY_ID` | Access Key ID from Neon Dashboard or AWS | Generated key |
+| `NEON_STORAGE_SECRET_ACCESS_KEY` | Secret Access Key | Generated secret |
+| `NEON_STORAGE_REGION` | Storage region | `us-east-1` |
+| `NEON_STORAGE_BUCKET_NAME` | Private bucket name | `csl-assessments-private` |
+
+*Note: If these variables are omitted (e.g. in local development or CI unit tests), the system automatically defaults to local file storage without failing.*

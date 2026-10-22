@@ -495,3 +495,179 @@ class PdfCodingAssessmentModeTests(TestCase):
         self.assertEqual(res_review.data["delivery_mode"], "PDF_CODING")
         self.assertTrue(res_review.data["is_manual_evaluation_pending"])
         self.assertEqual(res_review.data["pdf_filename"], "live_challenge.pdf")
+
+    # ─── NEON OBJECT STORAGE / S3 BACKEND REGRESSION TESTS ───────────────────
+
+    def test_neon_s3_storage_upload_and_candidate_stream(self):
+        """
+        Validates full Neon Object Storage / S3 lifecycle:
+        1. Uploads to S3 via S3-compatible API.
+        2. Stores s3_key and s3_bucket in PostgreSQL, keeping binary_data empty.
+        3. Candidate streams PDF bytes authenticated directly through server backend.
+        4. No permanent public URLs exposed.
+        """
+        from unittest.mock import patch, MagicMock
+        from apps.assessments.storage_service import AssessmentPdfStorageService
+
+        mock_s3 = MagicMock()
+        stored_objects = {}
+
+        def mock_put_object(Bucket, Key, Body, **kwargs):
+            stored_objects[(Bucket, Key)] = Body
+            return {"ETag": "mock-etag"}
+
+        def mock_get_object(Bucket, Key, **kwargs):
+            if (Bucket, Key) not in stored_objects:
+                raise Exception("NoSuchKey")
+            body_mock = MagicMock()
+            body_mock.read.return_value = stored_objects[(Bucket, Key)]
+            return {"Body": body_mock, "ContentType": "application/pdf"}
+
+        mock_s3.put_object.side_effect = mock_put_object
+        mock_s3.get_object.side_effect = mock_get_object
+
+        pdf_bytes = make_valid_pdf_bytes("Neon Storage Assessment Paper")
+        pdf_file = SimpleUploadedFile("neon_coding_paper.pdf", pdf_bytes, content_type="application/pdf")
+
+        assessment = Assessment.objects.create(
+            code="NEON-PDF-01",
+            title="Neon S3 Storage Assessment",
+            delivery_mode=Assessment.DeliveryMode.PDF_CODING,
+            duration_minutes=60,
+            total_marks=100,
+        )
+        assessment.eligible_colleges.add(self.college)
+
+        with patch.dict("os.environ", {
+            "NEON_STORAGE_ENDPOINT_URL": "https://test-branch.storage.us-east-1.aws.neon.tech",
+            "NEON_STORAGE_ACCESS_KEY_ID": "test-neon-access-key",
+            "NEON_STORAGE_SECRET_ACCESS_KEY": "test-neon-secret-key",
+            "NEON_STORAGE_REGION": "us-east-1",
+            "NEON_STORAGE_BUCKET_NAME": "csl-assessments-private",
+        }), patch.object(AssessmentPdfStorageService, "get_s3_client", return_value=mock_s3):
+            self.client.force_login(self.admin_user)
+
+            # Upload PDF via admin endpoint
+            res_upload = self.client.post(
+                f"/api/csl-admin/assessments/{assessment.id}/upload-pdf/",
+                {"pdf_file": pdf_file},
+                format="multipart",
+            )
+            self.assertEqual(res_upload.status_code, 200, res_upload.data)
+            self.assertEqual(res_upload.data["filename"], "neon_coding_paper.pdf")
+
+            # Check S3 put_object was called
+            self.assertTrue(mock_s3.put_object.called)
+            call_kwargs = mock_s3.put_object.call_args[1]
+            self.assertEqual(call_kwargs["Bucket"], "csl-assessments-private")
+            self.assertTrue(call_kwargs["Key"].startswith(f"assessments/{assessment.id}/"))
+            self.assertTrue(call_kwargs["Key"].endswith(".pdf"))
+            self.assertEqual(call_kwargs["ContentType"], "application/pdf")
+
+            # Verify PostgreSQL state: metadata stored, but binary_data is None to prevent DB bloat
+            assessment.refresh_from_db()
+            pdf_doc = assessment.pdf_document
+            self.assertEqual(pdf_doc.s3_bucket, "csl-assessments-private")
+            self.assertEqual(pdf_doc.s3_key, call_kwargs["Key"])
+            self.assertIsNone(pdf_doc.binary_data, "PostgreSQL binary_data must remain None when S3 storage is enabled")
+            self.assertEqual(pdf_doc.file_size, len(pdf_bytes))
+
+            # Prepare and open assessment
+            prepare_assessment(assessment, user=self.admin_user)
+            open_assessment(assessment, user=self.admin_user)
+
+            # Candidate starts attempt and downloads PDF
+            attempt = start_assessment_for_candidate(self.candidate, assessment=assessment)
+            token = generate_candidate_token(self.candidate.id, attempt_id=attempt.id)
+
+            res_stream = self.client.get(
+                f"/api/assessment/attempts/{attempt.id}/pdf/",
+                HTTP_AUTHORIZATION=f"Bearer {token}",
+            )
+            self.assertEqual(res_stream.status_code, 200)
+            self.assertEqual(res_stream["Content-Type"], "application/pdf")
+            self.assertEqual(res_stream["X-Content-Type-Options"], "nosniff")
+            self.assertIn("no-cache", res_stream["Cache-Control"])
+            self.assertIn("private", res_stream["Cache-Control"])
+            self.assertEqual(res_stream.content, pdf_bytes)
+
+    def test_s3_orphaned_object_cleanup_on_database_error(self):
+        """
+        When S3 upload succeeds but database transaction fails,
+        the orphaned S3 object is safely deleted to prevent cloud storage leaks.
+        """
+        from unittest.mock import patch, MagicMock
+        from apps.assessments.storage_service import AssessmentPdfStorageService
+
+        mock_s3 = MagicMock()
+        mock_s3.put_object.return_value = {"ETag": "mock-etag"}
+
+        pdf_bytes = make_valid_pdf_bytes("Cleanup Test Paper")
+        pdf_file = SimpleUploadedFile("leak_test.pdf", pdf_bytes, content_type="application/pdf")
+
+        assessment = Assessment.objects.create(
+            code="CLEANUP-PDF-01",
+            title="Cleanup Assessment",
+            delivery_mode=Assessment.DeliveryMode.PDF_CODING,
+            duration_minutes=60,
+            total_marks=50,
+        )
+
+        with patch.dict("os.environ", {
+            "NEON_STORAGE_ACCESS_KEY_ID": "test-key",
+            "NEON_STORAGE_SECRET_ACCESS_KEY": "test-secret",
+            "NEON_STORAGE_BUCKET_NAME": "csl-cleanup-bucket",
+        }), patch.object(AssessmentPdfStorageService, "get_s3_client", return_value=mock_s3):
+            self.client.force_login(self.admin_user)
+
+            # Simulate database integrity error during AssessmentPdfDocument.objects.create
+            with patch("apps.assessments.models.AssessmentPdfDocument.objects.create", side_effect=Exception("Database connection terminated")):
+                with self.assertRaises(Exception):
+                    self.client.post(
+                        f"/api/csl-admin/assessments/{assessment.id}/upload-pdf/",
+                        {"pdf_file": pdf_file},
+                        format="multipart",
+                    )
+
+            # S3 put_object was attempted, and delete_object was invoked to clean up the orphan!
+            self.assertTrue(mock_s3.put_object.called)
+            self.assertTrue(mock_s3.delete_object.called)
+            del_kwargs = mock_s3.delete_object.call_args[1]
+            self.assertEqual(del_kwargs["Bucket"], "csl-cleanup-bucket")
+            self.assertTrue(del_kwargs["Key"].startswith(f"assessments/{assessment.id}/"))
+
+    def test_s3_cleanup_on_assessment_deletion(self):
+        """
+        When an assessment with an S3-backed PDF is deleted, the corresponding S3 object is removed.
+        """
+        from unittest.mock import patch, MagicMock
+        from apps.assessments.storage_service import AssessmentPdfStorageService
+
+        mock_s3 = MagicMock()
+        assessment = Assessment.objects.create(
+            code="DEL-PDF-01",
+            title="Delete Test Assessment",
+            delivery_mode=Assessment.DeliveryMode.PDF_CODING,
+            duration_minutes=60,
+            total_marks=50,
+        )
+        pdf_doc = AssessmentPdfDocument.objects.create(
+            assessment=assessment,
+            original_filename="delete_me.pdf",
+            file_size=1024,
+            sha256="fake-hash",
+            s3_key="assessments/DEL-PDF-01/delete_me.pdf",
+            s3_bucket="test-del-bucket",
+        )
+
+        with patch.dict("os.environ", {
+            "NEON_STORAGE_ACCESS_KEY_ID": "test-key",
+            "NEON_STORAGE_SECRET_ACCESS_KEY": "test-secret",
+            "NEON_STORAGE_BUCKET_NAME": "test-del-bucket",
+        }), patch.object(AssessmentPdfStorageService, "get_s3_client", return_value=mock_s3):
+            # Delete PDF document
+            pdf_doc.delete()
+            self.assertTrue(mock_s3.delete_object.called)
+            del_kwargs = mock_s3.delete_object.call_args[1]
+            self.assertEqual(del_kwargs["Bucket"], "test-del-bucket")
+            self.assertEqual(del_kwargs["Key"], "assessments/DEL-PDF-01/delete_me.pdf")

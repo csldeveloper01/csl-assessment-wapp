@@ -420,8 +420,15 @@ export async function getAdminAssessmentDetail(id: string): Promise<AdminAssessm
   return res.data;
 }
 
-export async function createAdminAssessment(data: Partial<AdminAssessment> & { eligible_college_ids?: number[] }): Promise<AdminAssessmentDetail> {
-  const res = await adminApi.post<AdminAssessmentDetail>('/assessments/', data);
+export async function createAdminAssessment(
+  data: FormData | (Partial<AdminAssessment> & { eligible_college_ids?: number[] })
+): Promise<AdminAssessmentDetail> {
+  const isFormData = typeof FormData !== 'undefined' && data instanceof FormData;
+  const res = await adminApi.post<AdminAssessmentDetail>(
+    '/assessments/',
+    data,
+    isFormData ? { headers: { 'Content-Type': 'multipart/form-data' } } : undefined
+  );
   return res.data;
 }
 
