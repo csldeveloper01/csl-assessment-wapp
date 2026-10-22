@@ -533,6 +533,7 @@ class AttemptHeartbeatView(APIView):
     authentication_classes = [CandidateAssessmentAuthentication]
     permission_classes = [AllowAny]
 
+    @transaction.atomic
     def post(self, request, attempt_id):
         attempt = (
             AssessmentAttempt.objects.select_for_update()
@@ -556,6 +557,7 @@ class AttemptHeartbeatView(APIView):
             return Response(
                 {
                     "status": "finalized",
+                    "attempt_id": str(attempt.id),
                     "state": attempt.state,
                     "remaining_seconds": 0,
                     "server_time": now.isoformat(),
@@ -569,6 +571,7 @@ class AttemptHeartbeatView(APIView):
             return Response(
                 {
                     "status": "expired",
+                    "attempt_id": str(attempt.id),
                     "state": attempt.state,
                     "remaining_seconds": 0,
                     "server_time": now.isoformat(),
