@@ -4,6 +4,7 @@ import {
   updateAdminAttemptReviewStatus,
   reviewAdminIntegrityEvent,
   deleteAdminAttempt,
+  fetchAdminAssessmentPdfBlob,
   type AdminAttemptReview,
   type AdminIntegrityEvent,
 } from '../../api/admin';
@@ -31,6 +32,27 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
   const [eventIsReviewed, setEventIsReviewed] = useState(true);
   const [eventReviewNotes, setEventReviewNotes] = useState('');
   const [savingEventReview, setSavingEventReview] = useState(false);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
+  const handleDownloadPdf = async () => {
+    if (!review?.assessment_id) return;
+    try {
+      setDownloadingPdf(true);
+      const blob = await fetchAdminAssessmentPdfBlob(review.assessment_id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = review.pdf_filename || 'question_paper.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      alert('Failed to download question paper PDF.');
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
 
   const loadReview = async () => {
     try {
@@ -319,12 +341,26 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
                   borderRadius: '9999px',
                   fontSize: '11px',
                   fontWeight: 800,
-                  backgroundColor: review.state === 'SUBMITTED' ? '#DCFCE7' : '#FEF3C7',
-                  color: review.state === 'SUBMITTED' ? '#166534' : '#B45309',
+                  backgroundColor: review.state === 'SUBMITTED' ? '#DCFCE7' : (review.state === 'COMPLETED_PENDING_MANUAL_EVALUATION' ? '#FEF3C7' : '#F1F5F9'),
+                  color: review.state === 'SUBMITTED' ? '#166534' : (review.state === 'COMPLETED_PENDING_MANUAL_EVALUATION' ? '#92400E' : '#475569'),
                 }}
               >
-                {review.state}
+                {review.state === 'COMPLETED_PENDING_MANUAL_EVALUATION' ? 'Pending Manual Evaluation' : review.state}
               </span>
+              {review.delivery_mode === 'PDF_CODING' && (
+                <span
+                  style={{
+                    padding: '3px 12px',
+                    borderRadius: '9999px',
+                    fontSize: '11px',
+                    fontWeight: 800,
+                    backgroundColor: '#EDE9FE',
+                    color: '#6D28D9',
+                  }}
+                >
+                  📄 PDF Assessment Mode
+                </span>
+              )}
               {review.is_flagged && (
                 <span
                   style={{
@@ -367,10 +403,21 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
               <div style={{ fontSize: '11px', color: '#64748B', fontWeight: 800, textTransform: 'uppercase' }}>
                 Total Score
               </div>
-              <div style={{ fontSize: '26px', fontWeight: 800, color: '#0B2E6F', margin: '2px 0' }}>
-                {review.total_score} <span style={{ fontSize: '14px', color: '#94A3B8' }}>/ {review.total_questions || review.questions.length}</span>
-              </div>
-              <div style={{ fontSize: '12px', color: '#16A34A', fontWeight: 800 }}>{review.percentage}%</div>
+              {review.delivery_mode === 'PDF_CODING' || review.is_manual_evaluation_pending ? (
+                <>
+                  <div style={{ fontSize: '18px', fontWeight: 800, color: '#D97706', margin: '6px 0' }}>
+                    Paper Eval
+                  </div>
+                  <div style={{ fontSize: '11px', color: '#92400E', fontWeight: 700 }}>Pending Score</div>
+                </>
+              ) : (
+                <>
+                  <div style={{ fontSize: '26px', fontWeight: 800, color: '#0B2E6F', margin: '2px 0' }}>
+                    {review.total_score} <span style={{ fontSize: '14px', color: '#94A3B8' }}>/ {review.total_questions || review.questions.length}</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#16A34A', fontWeight: 800 }}>{review.percentage}%</div>
+                </>
+              )}
             </div>
 
             {/* Dynamic Section Score Cards */}
@@ -722,7 +769,45 @@ export function AdminAttemptReviewView({ attemptId, onBack }: AdminAttemptReview
 
       {/* Question Snapshots List */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-        {filteredQuestions.length === 0 ? (
+        {review.delivery_mode === 'PDF_CODING' ? (
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '12px',
+              padding: '36px',
+              textAlign: 'center',
+              color: '#64748B',
+              border: '1px solid #E2E8F0',
+            }}
+          >
+            <div style={{ fontSize: '36px', marginBottom: '12px' }}>📄</div>
+            <h3 style={{ fontSize: '16px', fontWeight: 800, color: '#0B2E6F', margin: '0 0 6px 0' }}>
+              Paper-Based Coding Assessment
+            </h3>
+            <p style={{ fontSize: '13px', color: '#64748B', maxWidth: '480px', margin: '0 auto 16px', lineHeight: 1.5 }}>
+              Candidate read questions on-screen and authored solutions on physical paper. Digital question answer logs and automated MCQ scoring are not applicable.
+            </p>
+            {review.assessment_id && (
+              <button
+                type="button"
+                onClick={handleDownloadPdf}
+                disabled={downloadingPdf}
+                style={{
+                  padding: '8px 18px',
+                  backgroundColor: '#7C3AED',
+                  color: '#FFFFFF',
+                  border: 'none',
+                  borderRadius: '8px',
+                  fontSize: '13px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {downloadingPdf ? 'Downloading...' : '⬇ Download Question Paper PDF'}
+              </button>
+            )}
+          </div>
+        ) : filteredQuestions.length === 0 ? (
           <div
             style={{
               backgroundColor: '#FFFFFF',

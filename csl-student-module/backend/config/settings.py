@@ -178,6 +178,14 @@ STATIC_ROOT = BASE_DIR / 'staticfiles'
 # Use CompressedStaticFilesStorage to serve gzip/brotli without crashing on missing manifest entries during tests
 STATICFILES_STORAGE = 'whitenoise.storage.CompressedStaticFilesStorage'
 
+# ─── Media & File Storage (Private / Access-Controlled) ────────────────────────
+MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_URL = '/media/'  # Never publicly routed; accessed strictly via authenticated endpoints
+
+# PDF Assessment Mode feature settings
+ENABLE_PDF_ASSESSMENT_MODE = os.getenv('ENABLE_PDF_ASSESSMENT_MODE', 'True').lower() in ('true', '1')
+MAX_PDF_UPLOAD_SIZE_MB = int(os.getenv('MAX_PDF_UPLOAD_SIZE_MB', '10'))
+
 
 # ─── CORS (configurable for production) ───────────────────────────────────────
 from corsheaders.defaults import default_headers

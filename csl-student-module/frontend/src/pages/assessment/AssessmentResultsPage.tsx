@@ -240,7 +240,9 @@ export function AssessmentResultsPage() {
             margin: '0 0 24px 0',
           }}
         >
-          Your responses have been recorded and your assessment session has concluded successfully.
+          {result.delivery_mode === 'PDF_CODING' || result.is_manual_evaluation_pending
+            ? 'Your coding assessment session has concluded. Your physical answer paper will be manually evaluated by the technical evaluation team.'
+            : 'Your responses have been recorded and your assessment session has concluded successfully.'}
         </p>
 
         {/* Candidate & Verification Card */}
@@ -270,7 +272,11 @@ export function AssessmentResultsPage() {
           </div>
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ color: '#64748B', fontWeight: 600 }}>Submission Status:</span>
-            <span style={{ color: '#059669', fontWeight: 700 }}>Recorded & Verified</span>
+            <span style={{ color: result.delivery_mode === 'PDF_CODING' ? '#7C3AED' : '#059669', fontWeight: 700 }}>
+              {result.delivery_mode === 'PDF_CODING' || result.is_manual_evaluation_pending
+                ? 'Recorded — Pending Paper Evaluation'
+                : 'Recorded & Verified'}
+            </span>
           </div>
         </div>
 

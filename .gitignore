@@ -24,6 +24,8 @@ dist-ssr/
 # Build & Cache
 build/
 .cache/
+media/
+*.pdf
 
 # Logs
 npm-debug.log*

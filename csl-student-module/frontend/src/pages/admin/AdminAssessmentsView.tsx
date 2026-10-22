@@ -15,6 +15,8 @@ import {
   getAdminColleges,
   getAdminSections,
   createAdminSection,
+  uploadAdminAssessmentPdf,
+  fetchAdminAssessmentPdfBlob,
   type AdminAssessment,
   type AdminAssessmentDetail,
   type AdminCollege,
@@ -114,6 +116,35 @@ export function AdminAssessmentsView({
   });
   const [editError, setEditError] = useState('');
   const [editSubmitting, setEditSubmitting] = useState(false);
+
+  // PDF Assessment Mode State
+  const [createDeliveryMode, setCreateDeliveryMode] = useState<'MCQ' | 'PDF_CODING'>('MCQ');
+  const [createPdfFile, setCreatePdfFile] = useState<File | null>(null);
+
+  const [editDeliveryMode, setEditDeliveryMode] = useState<'MCQ' | 'PDF_CODING'>('MCQ');
+  const [editPdfFile, setEditPdfFile] = useState<File | null>(null);
+  const [editPdfFilename, setEditPdfFilename] = useState<string | null>(null);
+  const [editPdfFileSize, setEditPdfFileSize] = useState<number | null>(null);
+  const [downloadingPdf, setDownloadingPdf] = useState(false);
+
+  const handleDownloadPdf = async (assessmentId: string, filename?: string) => {
+    try {
+      setDownloadingPdf(true);
+      const blob = await fetchAdminAssessmentPdfBlob(assessmentId);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename || 'question_paper.pdf';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err: any) {
+      alert(formatApiError(err, 'Failed to download question paper PDF.'));
+    } finally {
+      setDownloadingPdf(false);
+    }
+  };
   const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
   const fetchAssessments = async () => {
@@ -384,6 +415,8 @@ export function AdminAssessmentsView({
   // Section Allocation Helpers
   const handleOpenCreateModal = () => {
     setCreateError('');
+    setCreateDeliveryMode('MCQ');
+    setCreatePdfFile(null);
     setCreateForm({
       code: '',
       title: '',
@@ -423,28 +456,41 @@ export function AdminAssessmentsView({
       setCreateError('Assessment title is required.');
       return;
     }
-    if (createSections.length === 0) {
-      setCreateError('Please configure at least one section for this assessment.');
-      return;
+    if (createDeliveryMode === 'PDF_CODING') {
+      if (!createPdfFile) {
+        setCreateError('Please select a valid PDF question paper to create a PDF Assessment Mode round.');
+        return;
+      }
+    } else {
+      if (createSections.length === 0) {
+        setCreateError('Please configure at least one section for this assessment.');
+        return;
+      }
     }
 
-    const totalQuestions = createSections.reduce((sum, s) => sum + Number(s.question_count || 0), 0);
-    const totalMarks = createSections.reduce(
-      (sum, s) => sum + Number(s.question_count || 0) * Number(s.marks_per_question || 1),
-      0
-    );
+    const totalQuestions = createDeliveryMode === 'PDF_CODING'
+      ? 0
+      : createSections.reduce((sum, s) => sum + Number(s.question_count || 0), 0);
+    const totalMarks = createDeliveryMode === 'PDF_CODING'
+      ? 100
+      : createSections.reduce(
+          (sum, s) => sum + Number(s.question_count || 0) * Number(s.marks_per_question || 1),
+          0
+        );
 
-    if (totalQuestions <= 0) {
+    if (createDeliveryMode !== 'PDF_CODING' && totalQuestions <= 0) {
       setCreateError('Total questions must be greater than 0.');
       return;
     }
 
-    const payloadSections = createSections.map((s, idx) => ({
-      section_id: s.section_id,
-      question_count: Number(s.question_count),
-      marks_per_question: Number(s.marks_per_question || 1),
-      order: idx,
-    }));
+    const payloadSections = createDeliveryMode === 'PDF_CODING'
+      ? []
+      : createSections.map((s, idx) => ({
+          section_id: s.section_id,
+          question_count: Number(s.question_count),
+          marks_per_question: Number(s.marks_per_question || 1),
+          order: idx,
+        }));
 
     // Find aptitude and coding counts for legacy fallback
     const aptSec = createSections.find((s) => s.code.toUpperCase() === 'APTITUDE');
@@ -452,14 +498,19 @@ export function AdminAssessmentsView({
 
     setCreateSubmitting(true);
     try {
-      await createAdminAssessment({
+      const created = await createAdminAssessment({
         ...createForm,
         code: createForm.code.trim().toUpperCase(),
+        delivery_mode: createDeliveryMode,
         total_marks: totalMarks,
-        aptitude_count: aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2)),
-        coding_count: codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2)),
+        aptitude_count: createDeliveryMode === 'PDF_CODING' ? 0 : (aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2))),
+        coding_count: createDeliveryMode === 'PDF_CODING' ? 0 : (codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2))),
         sections: payloadSections,
       });
+
+      if (createDeliveryMode === 'PDF_CODING' && createPdfFile) {
+        await uploadAdminAssessmentPdf(created.id, createPdfFile);
+      }
       setShowCreateModal(false);
       fetchAssessments();
       setActionMessage({ text: `Assessment "${createForm.title}" created successfully in DRAFT state.`, type: 'success' });
@@ -472,6 +523,10 @@ export function AdminAssessmentsView({
 
   const handleOpenEdit = (assessment: AdminAssessment) => {
     setEditError('');
+    setEditDeliveryMode(assessment.delivery_mode || 'MCQ');
+    setEditPdfFile(null);
+    setEditPdfFilename(assessment.pdf_filename || null);
+    setEditPdfFileSize(assessment.pdf_file_size || null);
     setEditForm({
       id: assessment.id,
       code: assessment.code,
@@ -542,28 +597,41 @@ export function AdminAssessmentsView({
       setEditError('Duration must be at least 1 minute.');
       return;
     }
-    if (editSections.length === 0) {
-      setEditError('Assessment must include at least 1 section.');
-      return;
+    if (editDeliveryMode === 'PDF_CODING') {
+      if (!editPdfFilename && !editPdfFile) {
+        setEditError('A valid PDF question paper is required for PDF Assessment Mode.');
+        return;
+      }
+    } else {
+      if (editSections.length === 0) {
+        setEditError('Assessment must include at least 1 section.');
+        return;
+      }
     }
 
-    const totalQuestions = editSections.reduce((sum, s) => sum + Number(s.question_count || 0), 0);
-    const totalMarks = editSections.reduce(
-      (sum, s) => sum + Number(s.question_count || 0) * Number(s.marks_per_question || 1),
-      0
-    );
+    const totalQuestions = editDeliveryMode === 'PDF_CODING'
+      ? 0
+      : editSections.reduce((sum, s) => sum + Number(s.question_count || 0), 0);
+    const totalMarks = editDeliveryMode === 'PDF_CODING'
+      ? 100
+      : editSections.reduce(
+          (sum, s) => sum + Number(s.question_count || 0) * Number(s.marks_per_question || 1),
+          0
+        );
 
-    if (totalQuestions <= 0) {
+    if (editDeliveryMode !== 'PDF_CODING' && totalQuestions <= 0) {
       setEditError('Total question count across sections must be greater than 0.');
       return;
     }
 
-    const payloadSections = editSections.map((s, idx) => ({
-      section_id: s.section_id,
-      question_count: Number(s.question_count),
-      marks_per_question: Number(s.marks_per_question || 1),
-      order: idx,
-    }));
+    const payloadSections = editDeliveryMode === 'PDF_CODING'
+      ? []
+      : editSections.map((s, idx) => ({
+          section_id: s.section_id,
+          question_count: Number(s.question_count),
+          marks_per_question: Number(s.marks_per_question || 1),
+          order: idx,
+        }));
 
     const aptSec = editSections.find((s) => s.code.toUpperCase() === 'APTITUDE');
     const codSec = editSections.find((s) => s.code.toUpperCase() === 'CODING');
@@ -576,14 +644,19 @@ export function AdminAssessmentsView({
         description: editForm.description,
         duration_minutes: Number(editForm.duration_minutes),
         total_marks: totalMarks,
-        aptitude_count: aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2)),
-        coding_count: codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2)),
+        delivery_mode: editDeliveryMode,
+        aptitude_count: editDeliveryMode === 'PDF_CODING' ? 0 : (aptSec ? Number(aptSec.question_count) : (payloadSections.length > 0 ? 0 : Math.floor(totalQuestions / 2))),
+        coding_count: editDeliveryMode === 'PDF_CODING' ? 0 : (codSec ? Number(codSec.question_count) : (payloadSections.length > 0 ? 0 : Math.ceil(totalQuestions / 2))),
         max_attempts: Number(editForm.max_attempts),
         max_tab_switches_warning: Number(editForm.max_tab_switches_warning),
         auto_submit_on_tab_limit: editForm.auto_submit_on_tab_limit,
         close_policy: editForm.close_policy,
         sections: payloadSections,
       });
+
+      if (editDeliveryMode === 'PDF_CODING' && editPdfFile) {
+        await uploadAdminAssessmentPdf(editForm.id, editPdfFile);
+      }
       setShowEditModal(false);
       fetchAssessments();
       if (selectedAssessment?.id === editForm.id) {
@@ -1003,29 +1076,49 @@ export function AdminAssessmentsView({
                         {a.description}
                       </div>
                     )}
+                    {a.delivery_mode === 'PDF_CODING' && (
+                      <div style={{ marginTop: '4px' }}>
+                        <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', padding: '2px 8px', borderRadius: '12px', fontSize: '11px', fontWeight: 700, backgroundColor: '#EDE9FE', color: '#6D28D9' }}>
+                          📄 PDF Assessment Mode
+                        </span>
+                        {a.pdf_filename && (
+                          <span style={{ marginLeft: '6px', fontSize: '11px', color: '#4B5563', fontFamily: 'monospace' }}>
+                            {a.pdf_filename}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </td>
                   <td style={{ padding: '14px 16px', textAlign: 'center' }}>
                     {getStatusBadge(a.status, a.is_open)}
                   </td>
                   <td style={{ padding: '14px 16px', color: '#475569' }}>
                     <div><strong>{a.duration_minutes}</strong> mins • <strong>{a.total_marks}</strong> marks</div>
-                    <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
-                      {a.sections && a.sections.length > 0 ? (
-                        a.sections.map((s) => `${s.question_count} ${s.section_name || s.section_code}`).join(' + ')
-                      ) : (
-                        `${a.aptitude_count} Aptitude + ${a.coding_count} Coding`
-                      )}
-                    </div>
-                    <div style={{ fontSize: '11px', marginTop: '3px' }}>
-                      <span
-                        style={{
-                          fontWeight: 700,
-                          color: a.pool_sufficient ? '#16A34A' : '#DC2626',
-                        }}
-                      >
-                        Pool: {a.pool_questions_count || 0} Qs ({a.pool_sufficient ? '✓ Sufficient' : '⚠ Insufficient'})
-                      </span>
-                    </div>
+                    {a.delivery_mode === 'PDF_CODING' ? (
+                      <div style={{ fontSize: '12px', color: '#7C3AED', fontWeight: 600, marginTop: '2px' }}>
+                        Physical Paper Coding • On-Screen PDF
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                          {a.sections && a.sections.length > 0 ? (
+                            a.sections.map((s) => `${s.question_count} ${s.section_name || s.section_code}`).join(' + ')
+                          ) : (
+                            `${a.aptitude_count} Aptitude + ${a.coding_count} Coding`
+                          )}
+                        </div>
+                        <div style={{ fontSize: '11px', marginTop: '3px' }}>
+                          <span
+                            style={{
+                              fontWeight: 700,
+                              color: a.pool_sufficient ? '#16A34A' : '#DC2626',
+                            }}
+                          >
+                            Pool: {a.pool_questions_count || 0} Qs ({a.pool_sufficient ? '✓ Sufficient' : '⚠ Insufficient'})
+                          </span>
+                        </div>
+                      </>
+                    )}
                   </td>
                   <td style={{ padding: '14px 16px', textAlign: 'center' }}>
                     <button
@@ -1353,7 +1446,112 @@ export function AdminAssessmentsView({
                 </div>
               </div>
 
-              {/* ─── DYNAMIC SECTION ALLOCATION CARD ─── */}
+              {/* ─── ASSESSMENT DELIVERY MODE SELECTOR ─── */}
+              <div
+                style={{
+                  backgroundColor: createDeliveryMode === 'PDF_CODING' ? '#F5F3FF' : '#F8FAFC',
+                  borderRadius: '10px',
+                  border: createDeliveryMode === 'PDF_CODING' ? '1.5px solid #8B5CF6' : '1px solid #CBD5E1',
+                  padding: '16px',
+                  marginBottom: '16px',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: 800, color: '#0B2E6F' }}>
+                      Delivery Mode
+                    </label>
+                    <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                      Choose between standard online MCQ questions or physical paper coding with on-screen PDF.
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setCreateDeliveryMode('MCQ')}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: '6px',
+                        border: createDeliveryMode === 'MCQ' ? '2px solid #1455B8' : '1px solid #CBD5E1',
+                        backgroundColor: createDeliveryMode === 'MCQ' ? '#EFF6FF' : '#FFFFFF',
+                        color: createDeliveryMode === 'MCQ' ? '#1D4ED8' : '#64748B',
+                        fontWeight: 700,
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Online MCQ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCreateDeliveryMode('PDF_CODING')}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: '6px',
+                        border: createDeliveryMode === 'PDF_CODING' ? '2px solid #7C3AED' : '1px solid #CBD5E1',
+                        backgroundColor: createDeliveryMode === 'PDF_CODING' ? '#EDE9FE' : '#FFFFFF',
+                        color: createDeliveryMode === 'PDF_CODING' ? '#6D28D9' : '#64748B',
+                        fontWeight: 700,
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      📄 PDF Assessment Mode
+                    </button>
+                  </div>
+                </div>
+
+                {createDeliveryMode === 'PDF_CODING' && (
+                  <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #DDD6FE' }}>
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#4C1D95', marginBottom: '4px' }}>
+                      Upload Question Paper PDF *
+                    </label>
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      required={createDeliveryMode === 'PDF_CODING'}
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        if (file) {
+                          if (!file.name.toLowerCase().endsWith('.pdf')) {
+                            setCreateError('Only PDF files (.pdf) are allowed.');
+                            setCreatePdfFile(null);
+                            return;
+                          }
+                          if (file.size > 10 * 1024 * 1024) {
+                            setCreateError('PDF file size must not exceed 10 MB.');
+                            setCreatePdfFile(null);
+                            return;
+                          }
+                          setCreateError('');
+                          setCreatePdfFile(file);
+                        }
+                      }}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        fontSize: '13px',
+                        padding: '8px',
+                        borderRadius: '6px',
+                        border: '1px solid #C4B5FD',
+                        backgroundColor: '#FFFFFF',
+                      }}
+                    />
+                    <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '4px' }}>
+                      Accepted format: PDF only. Maximum size: 10MB. Candidates read this PDF on-screen and write their answers on paper.
+                    </div>
+                    {createPdfFile && (
+                      <div style={{ marginTop: '8px', fontSize: '12px', color: '#059669', fontWeight: 600 }}>
+                        ✓ Selected: {createPdfFile.name} ({(createPdfFile.size / 1024).toFixed(1)} KB)
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* ─── DYNAMIC SECTION ALLOCATION CARD (MCQ MODE ONLY) ─── */}
+              {createDeliveryMode === 'MCQ' && (
               <div
                 style={{
                   backgroundColor: '#F8FAFC',
@@ -1538,6 +1736,7 @@ export function AdminAssessmentsView({
                   </span>
                 </div>
               </div>
+              )}
 
               {/* Close Policy */}
               <div style={{ marginBottom: '16px' }}>
@@ -1723,7 +1922,145 @@ export function AdminAssessmentsView({
                 </div>
               </div>
 
-              {/* ─── DYNAMIC SECTION ALLOCATION CARD (EDIT) ─── */}
+              {/* ─── ASSESSMENT DELIVERY MODE SELECTOR (EDIT) ─── */}
+              <div
+                style={{
+                  backgroundColor: editDeliveryMode === 'PDF_CODING' ? '#F5F3FF' : '#F8FAFC',
+                  borderRadius: '10px',
+                  border: editDeliveryMode === 'PDF_CODING' ? '1.5px solid #8B5CF6' : '1px solid #CBD5E1',
+                  padding: '16px',
+                  marginBottom: '16px',
+                  transition: 'all 0.2s ease',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                  <div>
+                    <label style={{ fontSize: '13px', fontWeight: 800, color: '#0B2E6F' }}>
+                      Delivery Mode
+                    </label>
+                    <div style={{ fontSize: '12px', color: '#64748B', marginTop: '2px' }}>
+                      Choose between standard online MCQ questions or physical paper coding with on-screen PDF.
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => setEditDeliveryMode('MCQ')}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: '6px',
+                        border: editDeliveryMode === 'MCQ' ? '2px solid #1455B8' : '1px solid #CBD5E1',
+                        backgroundColor: editDeliveryMode === 'MCQ' ? '#EFF6FF' : '#FFFFFF',
+                        color: editDeliveryMode === 'MCQ' ? '#1D4ED8' : '#64748B',
+                        fontWeight: 700,
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      Online MCQ
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setEditDeliveryMode('PDF_CODING')}
+                      style={{
+                        padding: '6px 14px',
+                        borderRadius: '6px',
+                        border: editDeliveryMode === 'PDF_CODING' ? '2px solid #7C3AED' : '1px solid #CBD5E1',
+                        backgroundColor: editDeliveryMode === 'PDF_CODING' ? '#EDE9FE' : '#FFFFFF',
+                        color: editDeliveryMode === 'PDF_CODING' ? '#6D28D9' : '#64748B',
+                        fontWeight: 700,
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      📄 PDF Assessment Mode
+                    </button>
+                  </div>
+                </div>
+
+                {editDeliveryMode === 'PDF_CODING' && (
+                  <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid #DDD6FE' }}>
+                    {editPdfFilename ? (
+                      <div style={{ marginBottom: '12px', padding: '10px 14px', backgroundColor: '#EDE9FE', borderRadius: '8px', border: '1px solid #DDD6FE', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                        <div>
+                          <div style={{ fontSize: '12px', color: '#5B21B6', fontWeight: 700 }}>
+                            Current Attached Paper:
+                          </div>
+                          <div style={{ fontSize: '13px', fontWeight: 600, color: '#4C1D95', fontFamily: 'monospace' }}>
+                            {editPdfFilename} {editPdfFileSize ? `(${((editPdfFileSize) / 1024).toFixed(1)} KB)` : ''}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleDownloadPdf(editForm.id, editPdfFilename || undefined)}
+                          disabled={downloadingPdf}
+                          style={{
+                            padding: '4px 10px',
+                            borderRadius: '6px',
+                            border: '1px solid #7C3AED',
+                            backgroundColor: '#FFFFFF',
+                            color: '#7C3AED',
+                            fontSize: '12px',
+                            fontWeight: 700,
+                            cursor: 'pointer',
+                          }}
+                        >
+                          {downloadingPdf ? 'Downloading...' : '⬇ Preview Current PDF'}
+                        </button>
+                      </div>
+                    ) : (
+                      <div style={{ marginBottom: '12px', color: '#DC2626', fontSize: '12px', fontWeight: 600 }}>
+                        ⚠ No PDF question paper attached yet. Please upload one below.
+                      </div>
+                    )}
+
+                    <label style={{ display: 'block', fontSize: '13px', fontWeight: 700, color: '#4C1D95', marginBottom: '4px' }}>
+                      {editPdfFilename ? 'Replace Question Paper PDF' : 'Upload Question Paper PDF *'}
+                    </label>
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      onChange={(e) => {
+                        const file = e.target.files?.[0] || null;
+                        if (file) {
+                          if (!file.name.toLowerCase().endsWith('.pdf')) {
+                            setEditError('Only PDF files (.pdf) are allowed.');
+                            setEditPdfFile(null);
+                            return;
+                          }
+                          if (file.size > 10 * 1024 * 1024) {
+                            setEditError('PDF file size must not exceed 10 MB.');
+                            setEditPdfFile(null);
+                            return;
+                          }
+                          setEditError('');
+                          setEditPdfFile(file);
+                        }
+                      }}
+                      style={{
+                        display: 'block',
+                        width: '100%',
+                        fontSize: '13px',
+                        padding: '8px',
+                        borderRadius: '6px',
+                        border: '1px solid #C4B5FD',
+                        backgroundColor: '#FFFFFF',
+                      }}
+                    />
+                    <div style={{ fontSize: '11px', color: '#6B7280', marginTop: '4px' }}>
+                      Accepted format: PDF only. Maximum size: 10MB.
+                    </div>
+                    {editPdfFile && (
+                      <div style={{ marginTop: '8px', fontSize: '12px', color: '#059669', fontWeight: 600 }}>
+                        ✓ New file selected: {editPdfFile.name} ({(editPdfFile.size / 1024).toFixed(1)} KB) — will replace current paper upon save.
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* ─── DYNAMIC SECTION ALLOCATION CARD (EDIT - MCQ MODE ONLY) ─── */}
+              {editDeliveryMode === 'MCQ' && (
               <div
                 style={{
                   backgroundColor: '#F8FAFC',
@@ -1905,6 +2242,7 @@ export function AdminAssessmentsView({
                   </span>
                 </div>
               </div>
+              )}
 
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '20px' }}>
                 <div>
@@ -2397,12 +2735,48 @@ export function AdminAssessmentsView({
                         {assessmentDetail.closed_at && (
                           <div>Closed: <strong>{new Date(assessmentDetail.closed_at).toLocaleString()}</strong></div>
                         )}
-                        <div>
-                          Question Pool Status:{' '}
-                          <strong style={{ color: assessmentDetail.pool_sufficient ? '#16A34A' : '#DC2626' }}>
-                            {assessmentDetail.pool_sufficient ? '✓ Sufficient' : '⚠ Insufficient Pool'}
-                          </strong>
-                        </div>
+                        {assessmentDetail.delivery_mode === 'PDF_CODING' ? (
+                          <>
+                            <div>
+                              Delivery Format: <strong style={{ color: '#7C3AED' }}>📄 PDF Assessment Mode</strong>
+                            </div>
+                            <div style={{ gridColumn: 'span 2' }}>
+                              Question Paper:{' '}
+                              {assessmentDetail.pdf_filename ? (
+                                <span style={{ color: '#059669', fontWeight: 700 }}>
+                                  {assessmentDetail.pdf_filename} ({((assessmentDetail.pdf_file_size || 0) / 1024).toFixed(1)} KB)
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDownloadPdf(assessmentDetail.id, assessmentDetail.pdf_filename || undefined)}
+                                    disabled={downloadingPdf}
+                                    style={{
+                                      marginLeft: '10px',
+                                      padding: '3px 10px',
+                                      fontSize: '11px',
+                                      fontWeight: 700,
+                                      backgroundColor: '#EDE9FE',
+                                      color: '#6D28D9',
+                                      border: '1px solid #DDD6FE',
+                                      borderRadius: '4px',
+                                      cursor: 'pointer',
+                                    }}
+                                  >
+                                    {downloadingPdf ? 'Downloading...' : '⬇ Download / Preview PDF'}
+                                  </button>
+                                </span>
+                              ) : (
+                                <strong style={{ color: '#DC2626' }}>⚠ Missing Question Paper PDF</strong>
+                              )}
+                            </div>
+                          </>
+                        ) : (
+                          <div>
+                            Question Pool Status:{' '}
+                            <strong style={{ color: assessmentDetail.pool_sufficient ? '#16A34A' : '#DC2626' }}>
+                              {assessmentDetail.pool_sufficient ? '✓ Sufficient' : '⚠ Insufficient Pool'}
+                            </strong>
+                          </div>
+                        )}
                       </div>
                     </div>
 

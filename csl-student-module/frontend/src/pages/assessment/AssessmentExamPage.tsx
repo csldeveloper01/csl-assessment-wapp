@@ -8,6 +8,7 @@ import {
   syncAnswers,
   recordIntegrityEvent,
   finalizeAssessment,
+  fetchAttemptPdfBlob,
   type AttemptDetailResponse,
   type QuestionSnapshot,
 } from '../../api/assessment';
@@ -81,6 +82,12 @@ export function AssessmentExamPage() {
   const [isFullscreen, setIsFullscreen] = useState<boolean>(
     () => !!(document.fullscreenElement || (document as any).webkitFullscreenElement || (window.innerHeight >= screen.height - 20))
   );
+
+  // PDF Assessment Mode State
+  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  const [pdfLoading, setPdfLoading] = useState<boolean>(false);
+  const [pdfError, setPdfError] = useState<string | null>(null);
+  const [pdfZoom, setPdfZoom] = useState<number>(100);
 
   const isPageHiddenRef = useRef<boolean>(false);
 
@@ -240,6 +247,37 @@ export function AssessmentExamPage() {
   useEffect(() => {
     loadAttempt();
   }, [loadAttempt]);
+
+  // Load PDF for PDF Coding assessments
+  useEffect(() => {
+    if (!attemptId || attempt?.delivery_mode !== 'PDF_CODING') return;
+    let isMounted = true;
+    let currentUrl: string | null = null;
+    setPdfLoading(true);
+    setPdfError(null);
+
+    fetchAttemptPdfBlob(attemptId)
+      .then((blob) => {
+        if (!isMounted) return;
+        currentUrl = URL.createObjectURL(blob);
+        setPdfBlobUrl(currentUrl);
+      })
+      .catch((err: any) => {
+        if (!isMounted) return;
+        setPdfError(
+          err?.response?.data?.detail ||
+            'Unable to load assessment question paper PDF. Please notify your test invigilator.'
+        );
+      })
+      .finally(() => {
+        if (isMounted) setPdfLoading(false);
+      });
+
+    return () => {
+      isMounted = false;
+      if (currentUrl) URL.revokeObjectURL(currentUrl);
+    };
+  }, [attemptId, attempt?.delivery_mode]);
 
   // Keep active section tab synchronized with current question section
   useEffect(() => {
@@ -1073,7 +1111,215 @@ export function AssessmentExamPage() {
         </div>
       )}
 
-      {/* ─── 2. MAIN 3-COLUMN WORKSPACE (SINGLE-VIEWPORT FIT) ─────────── */}
+      {/* ─── 2. MAIN WORKSPACE (PDF CODING OR 3-COLUMN MCQ) ─────────── */}
+      {attempt?.delivery_mode === 'PDF_CODING' ? (
+        <div
+          style={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            padding: '12px 24px 16px',
+            overflow: 'hidden',
+            boxSizing: 'border-box',
+          }}
+        >
+          {/* PDF Mode Info & Controls Bar */}
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '10px',
+              border: '1.5px solid #DDD6FE',
+              padding: '10px 16px',
+              marginBottom: '12px',
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              gap: '12px',
+              boxShadow: '0 2px 8px rgba(124, 58, 237, 0.05)',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <span
+                style={{
+                  backgroundColor: '#EDE9FE',
+                  color: '#6D28D9',
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  fontWeight: 800,
+                  fontSize: '12px',
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '5px',
+                }}
+              >
+                📄 PDF Coding Assessment Mode
+              </span>
+              <span style={{ fontSize: '13px', color: '#4B5563' }}>
+                Write all solutions on your physical answer paper. No digital code submission is collected.
+              </span>
+            </div>
+
+            {/* Zoom / Controls */}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                type="button"
+                onClick={() => setPdfZoom((z) => Math.max(50, z - 15))}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid #CBD5E1',
+                  backgroundColor: '#FFFFFF',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  color: '#334155',
+                }}
+                title="Zoom Out"
+              >
+                − Zoom
+              </button>
+              <span style={{ fontSize: '12px', fontWeight: 700, color: '#475569', minWidth: '45px', textAlign: 'center' }}>
+                {pdfZoom}%
+              </span>
+              <button
+                type="button"
+                onClick={() => setPdfZoom((z) => Math.min(200, z + 15))}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid #CBD5E1',
+                  backgroundColor: '#FFFFFF',
+                  fontSize: '12px',
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  color: '#334155',
+                }}
+                title="Zoom In"
+              >
+                + Zoom
+              </button>
+              <button
+                type="button"
+                onClick={() => setPdfZoom(100)}
+                style={{
+                  padding: '4px 10px',
+                  borderRadius: '6px',
+                  border: '1px solid #CBD5E1',
+                  backgroundColor: '#FFFFFF',
+                  fontSize: '12px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  color: '#64748B',
+                }}
+                title="Reset to 100%"
+              >
+                Reset
+              </button>
+            </div>
+          </div>
+
+          {/* PDF Viewer Container */}
+          <div
+            style={{
+              flex: 1,
+              minHeight: 0,
+              backgroundColor: '#525659',
+              borderRadius: '12px',
+              overflow: 'hidden',
+              boxShadow: '0 4px 16px -2px rgba(11, 46, 111, 0.08)',
+              position: 'relative',
+              display: 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            {pdfLoading ? (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  height: '100%',
+                  color: '#FFFFFF',
+                  gap: '12px',
+                }}
+              >
+                <div
+                  style={{
+                    width: '36px',
+                    height: '36px',
+                    border: '3px solid rgba(255,255,255,0.3)',
+                    borderTopColor: '#FFD45C',
+                    borderRadius: '50%',
+                    animation: 'spin 1s linear infinite',
+                  }}
+                />
+                <span style={{ fontSize: '14px', fontWeight: 600 }}>Loading Question Paper PDF...</span>
+              </div>
+            ) : pdfError ? (
+              <div
+                style={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  height: '100%',
+                  backgroundColor: '#FFFFFF',
+                  padding: '32px',
+                  textAlign: 'center',
+                }}
+              >
+                <div style={{ fontSize: '36px', marginBottom: '12px' }}>⚠️</div>
+                <h3 style={{ color: '#DC2626', fontSize: '18px', fontWeight: 800, margin: '0 0 8px' }}>
+                  Unable to Load Question Paper
+                </h3>
+                <p style={{ color: '#64748B', fontSize: '13px', maxWidth: '420px', margin: '0 0 16px' }}>
+                  {pdfError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => window.location.reload()}
+                  style={{
+                    padding: '8px 18px',
+                    backgroundColor: '#0B2E6F',
+                    color: '#FFFFFF',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  Reload Question Paper
+                </button>
+              </div>
+            ) : pdfBlobUrl ? (
+              <iframe
+                src={`${pdfBlobUrl}#toolbar=1&navpanes=0&zoom=${pdfZoom}`}
+                style={{
+                  width: '100%',
+                  height: '100%',
+                  border: 'none',
+                }}
+                title="Question Paper PDF"
+              />
+            ) : (
+              <div
+                style={{
+                  display: 'flex',
+                  justifyContent: 'center',
+                  alignItems: 'center',
+                  height: '100%',
+                  color: '#FFFFFF',
+                }}
+              >
+                No question paper available.
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
       <div
         style={{
           flex: 1,
@@ -1916,6 +2162,7 @@ export function AssessmentExamPage() {
           </div>
         </aside>
       </div>
+      )}
 
       {/* ─── 3. SUBMISSION CONFIRMATION MODAL ─────────────────────────── */}
       {showSubmitModal && (
@@ -1952,51 +2199,82 @@ export function AssessmentExamPage() {
             >
               Confirm Final Submission
             </h3>
-            <p
-              style={{
-                fontSize: '14px',
-                color: '#4B5563',
-                marginBottom: '16px',
-                lineHeight: 1.5,
-              }}
-            >
-              You have answered <strong>{answeredCount}</strong> of{' '}
-              {attempt?.questions?.length || attempt?.total_questions || 50} questions (
-              <strong>
-                {Math.max(
-                  0,
-                  (attempt?.questions?.length || attempt?.total_questions || 50) - answeredCount
-                )}
-              </strong>{' '}
-              unattempted). Once submitted, answers cannot be modified. Are you sure you wish to
-              finalize your assessment?
-            </p>
+            {attempt?.delivery_mode === 'PDF_CODING' ? (
+              <>
+                <p
+                  style={{
+                    fontSize: '14px',
+                    color: '#4B5563',
+                    marginBottom: '16px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  Please ensure you have written all your code and answers on your physical paper answer sheets. Once submitted, your online session will conclude and your timer will stop.
+                </p>
+                <div
+                  style={{
+                    backgroundColor: '#EDE9FE',
+                    borderRadius: '8px',
+                    padding: '12px 16px',
+                    marginBottom: '20px',
+                    fontSize: '13px',
+                    color: '#5B21B6',
+                    textAlign: 'center',
+                    fontWeight: 600,
+                  }}
+                >
+                  ✍️ Hand in your physical answer sheet to the invigilator after submitting.
+                </div>
+              </>
+            ) : (
+              <>
+                <p
+                  style={{
+                    fontSize: '14px',
+                    color: '#4B5563',
+                    marginBottom: '16px',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  You have answered <strong>{answeredCount}</strong> of{' '}
+                  {attempt?.questions?.length || attempt?.total_questions || 50} questions (
+                  <strong>
+                    {Math.max(
+                      0,
+                      (attempt?.questions?.length || attempt?.total_questions || 50) - answeredCount
+                    )}
+                  </strong>{' '}
+                  unattempted). Once submitted, answers cannot be modified. Are you sure you wish to
+                  finalize your assessment?
+                </p>
 
-            <div
-              style={{
-                backgroundColor: '#FAF7F3',
-                borderRadius: '8px',
-                padding: '12px 16px',
-                marginBottom: '20px',
-                fontSize: '12px',
-                color: '#374151',
-                display: 'flex',
-                justifyContent: 'space-around',
-              }}
-            >
-              <div>
-                Answered: <strong style={{ color: '#16A34A' }}>{answeredCount}</strong>
-              </div>
-              <div>
-                Pending: <strong style={{ color: '#D97706' }}>{50 - answeredCount}</strong>
-              </div>
-              <div>
-                Bookmarked:{' '}
-                <strong style={{ color: '#1455B8' }}>
-                  {Object.values(markedForLater).filter(Boolean).length}
-                </strong>
-              </div>
-            </div>
+                <div
+                  style={{
+                    backgroundColor: '#FAF7F3',
+                    borderRadius: '8px',
+                    padding: '12px 16px',
+                    marginBottom: '20px',
+                    fontSize: '12px',
+                    color: '#374151',
+                    display: 'flex',
+                    justifyContent: 'space-around',
+                  }}
+                >
+                  <div>
+                    Answered: <strong style={{ color: '#16A34A' }}>{answeredCount}</strong>
+                  </div>
+                  <div>
+                    Pending: <strong style={{ color: '#D97706' }}>{50 - answeredCount}</strong>
+                  </div>
+                  <div>
+                    Bookmarked:{' '}
+                    <strong style={{ color: '#1455B8' }}>
+                      {Object.values(markedForLater).filter(Boolean).length}
+                    </strong>
+                  </div>
+                </div>
+              </>
+            )}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
               <button

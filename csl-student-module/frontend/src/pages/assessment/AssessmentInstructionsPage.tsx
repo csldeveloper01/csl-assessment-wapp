@@ -387,6 +387,7 @@ export function AssessmentInstructionsPage() {
   const maxAttempts = selectedAssessment?.max_attempts ?? 1;
   const assessmentTitle = selectedAssessment?.title ?? 'Initial Diagnostic Assessment';
   const assessmentCode = selectedAssessment?.code ?? 'CSL-INITIAL-01';
+  const isPdfCoding = selectedAssessment?.delivery_mode === 'PDF_CODING';
 
   // Screen 3: Standard Instructions Screen (CSL Brand Aligned)
   return (
@@ -587,10 +588,10 @@ export function AssessmentInstructionsPage() {
                 display: 'block',
               }}
             >
-              Questions
+              {isPdfCoding ? 'Format' : 'Questions'}
             </span>
             <strong style={{ fontSize: '20px', color: '#0B2E6F', fontWeight: 800 }}>
-              {totalQuestions} MCQs
+              {isPdfCoding ? 'PDF Coding' : `${totalQuestions} MCQs`}
             </strong>
           </div>
           <div
@@ -657,45 +658,64 @@ export function AssessmentInstructionsPage() {
               lineHeight: 1.7,
             }}
           >
-            {selectedAssessment?.sections && selectedAssessment.sections.length > 0 ? (
-              selectedAssessment.sections.map((sec, idx) => (
-                <li key={sec.id || idx}>
-                  <strong>
-                    Section {idx + 1}: {sec.name} ({sec.question_count} Questions, {sec.total_marks || sec.question_count * sec.marks_per_question} Marks)
-                  </strong>
-                </li>
-              ))
-            ) : (aptitudeCount > 0 || codingCount > 0) ? (
+            {isPdfCoding ? (
               <>
-                {aptitudeCount > 0 && (
-                  <li>
-                    <strong>Section 1: General Aptitude ({aptitudeCount} Questions)</strong> — Quantitative Problem
-                    Solving, Logical Reasoning, and Verbal Comprehension.
-                  </li>
-                )}
-                {codingCount > 0 && (
-                  <li>
-                    <strong>Section 2: Coding Fundamentals ({codingCount} Questions)</strong> — Core Programming
-                    Principles, Control Flow, Functions, OOP Concepts, and Data Structures.
-                  </li>
-                )}
+                <li>
+                  <strong>On-Screen PDF Question Paper:</strong> You will read all coding challenges and problem statements directly from an on-screen PDF viewer with zoom controls.
+                </li>
+                <li>
+                  <strong>Physical Paper Answers:</strong> Write your entire code, logic, diagrams, and explanations on your physical answer sheets. <strong>The platform does not collect digital code submissions in this mode.</strong>
+                </li>
+                <li>
+                  <strong>Authoritative Timing:</strong> The countdown timer will run continuously. Ensure you finish writing and reviewing your paper before the session concludes.
+                </li>
+                <li>
+                  <strong>Finishing the Session:</strong> When you have completed your paper, click the <strong>"Finish Assessment"</strong> button on your screen to officially close your session.
+                </li>
               </>
             ) : (
-              <li>
-                <strong>Comprehensive Assessment ({totalQuestions} Questions)</strong> — Questions configured for this assessment.
-              </li>
+              <>
+                {selectedAssessment?.sections && selectedAssessment.sections.length > 0 ? (
+                  selectedAssessment.sections.map((sec, idx) => (
+                    <li key={sec.id || idx}>
+                      <strong>
+                        Section {idx + 1}: {sec.name} ({sec.question_count} Questions, {sec.total_marks || sec.question_count * sec.marks_per_question} Marks)
+                      </strong>
+                    </li>
+                  ))
+                ) : (aptitudeCount > 0 || codingCount > 0) ? (
+                  <>
+                    {aptitudeCount > 0 && (
+                      <li>
+                        <strong>Section 1: General Aptitude ({aptitudeCount} Questions)</strong> — Quantitative Problem
+                        Solving, Logical Reasoning, and Verbal Comprehension.
+                      </li>
+                    )}
+                    {codingCount > 0 && (
+                      <li>
+                        <strong>Section 2: Coding Fundamentals ({codingCount} Questions)</strong> — Core Programming
+                        Principles, Control Flow, Functions, OOP Concepts, and Data Structures.
+                      </li>
+                    )}
+                  </>
+                ) : (
+                  <li>
+                    <strong>Comprehensive Assessment ({totalQuestions} Questions)</strong> — Questions configured for this assessment.
+                  </li>
+                )}
+                <li>
+                  Each correct question is awarded <strong>1 mark</strong>. There is no negative marking
+                  for incorrect answers.
+                </li>
+                <li>
+                  You may freely navigate between questions and update your selections before
+                  finalizing.
+                </li>
+                <li>
+                  All answers are automatically saved to the secure server as you select them.
+                </li>
+              </>
             )}
-            <li>
-              Each correct question is awarded <strong>1 mark</strong>. There is no negative marking
-              for incorrect answers.
-            </li>
-            <li>
-              You may freely navigate between questions and update your selections before
-              finalizing.
-            </li>
-            <li>
-              All answers are automatically saved to the secure server as you select them.
-            </li>
           </ul>
         </div>
 

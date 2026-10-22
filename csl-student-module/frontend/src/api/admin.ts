@@ -147,6 +147,10 @@ export interface AdminAssessment {
   opened_at?: string | null;
   closed_at?: string | null;
   close_policy: 'ALLOW_FINISH' | 'STRICT_CUTOFF';
+  delivery_mode?: 'MCQ' | 'PDF_CODING';
+  pdf_filename?: string | null;
+  pdf_file_size?: number | null;
+  pdf_uploaded_at?: string | null;
   created_at: string;
   updated_at: string;
   eligible_colleges: { id: number; name: string; code: string }[];
@@ -295,6 +299,10 @@ export interface AdminAttemptReview {
   flag_reason: string;
   total_questions: number;
   answered_count: number;
+  delivery_mode?: 'MCQ' | 'PDF_CODING';
+  is_manual_evaluation_pending?: boolean;
+  pdf_filename?: string;
+  pdf_file_size?: number;
   questions: AdminQuestionReviewSnapshot[];
   integrity_events: AdminIntegrityEvent[];
 }
@@ -311,6 +319,9 @@ export interface AdminResult {
   assessment_code?: string;
   department: string;
   year_of_study: string;
+  delivery_mode?: 'MCQ' | 'PDF_CODING';
+  is_manual_evaluation_pending?: boolean;
+  pdf_filename?: string;
   state: string;
   aptitude_score: number;
   coding_score: number;
@@ -511,6 +522,27 @@ export async function getAdminAssessmentAuditLogs(id: string): Promise<AdminAsse
 
 export async function getAdminGlobalAuditLogs(): Promise<AdminAssessmentAuditLog[]> {
   const res = await adminApi.get<AdminAssessmentAuditLog[]>('/audit-logs/');
+  return res.data;
+}
+
+export async function uploadAdminAssessmentPdf(
+  id: string,
+  file: File
+): Promise<{ message: string; pdf_filename: string; pdf_file_size: number; pdf_uploaded_at: string }> {
+  const formData = new FormData();
+  formData.append('pdf_file', file);
+  const res = await adminApi.post(`/assessments/${id}/upload-pdf/`, formData, {
+    headers: {
+      'Content-Type': 'multipart/form-data',
+    },
+  });
+  return res.data;
+}
+
+export async function fetchAdminAssessmentPdfBlob(id: string): Promise<Blob> {
+  const res = await adminApi.get(`/assessments/${id}/pdf/`, {
+    responseType: 'blob',
+  });
   return res.data;
 }
 

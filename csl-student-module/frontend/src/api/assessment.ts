@@ -61,6 +61,9 @@ export interface CandidateAssessmentItem {
   aptitude_count: number;
   coding_count: number;
   max_attempts: number;
+  delivery_mode?: 'MCQ' | 'PDF_CODING';
+  has_pdf?: boolean;
+  pdf_filename?: string | null;
   status: string;
   is_open: boolean;
   scheduled_start_time?: string;
@@ -132,7 +135,12 @@ export interface AttemptDetailResponse {
   assessment_id?: string;
   assessment_title?: string;
   assessment_code?: string;
-  state: 'CREATED' | 'IN_PROGRESS' | 'SUBMITTED' | 'TIMED_OUT' | 'FLAGGED_FOR_REVIEW';
+  state: 'CREATED' | 'IN_PROGRESS' | 'SUBMITTED' | 'TIMED_OUT' | 'FLAGGED_FOR_REVIEW' | 'COMPLETED_PENDING_MANUAL_EVALUATION';
+  delivery_mode?: 'MCQ' | 'PDF_CODING';
+  has_pdf?: boolean;
+  pdf_filename?: string | null;
+  pdf_file_size?: number | null;
+  is_manual_evaluation_pending?: boolean;
   started_at: string;
   deadline: string;
   remaining_seconds: number;
@@ -192,6 +200,8 @@ export interface ResultResponse {
   department: string;
   year_of_study?: string;
   state: string;
+  delivery_mode?: 'MCQ' | 'PDF_CODING';
+  is_manual_evaluation_pending?: boolean;
   aptitude_score: number;
   coding_score: number;
   total_score: number;
@@ -330,5 +340,12 @@ export const finalizeAssessment = async (attemptId: string): Promise<ResultRespo
 
 export const getAssessmentResult = async (attemptId: string): Promise<ResultResponse> => {
   const res = await assessmentApi.get<ResultResponse>(`/attempts/${attemptId}/result/`);
+  return res.data;
+};
+
+export const fetchAttemptPdfBlob = async (attemptId: string): Promise<Blob> => {
+  const res = await assessmentApi.get(`/attempts/${attemptId}/pdf/`, {
+    responseType: 'blob',
+  });
   return res.data;
 };

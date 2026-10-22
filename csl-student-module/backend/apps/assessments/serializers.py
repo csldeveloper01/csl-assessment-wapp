@@ -111,6 +111,9 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
     remaining_tab_switches = serializers.SerializerMethodField()
     server_time = serializers.SerializerMethodField()
     sections = serializers.SerializerMethodField()
+    delivery_mode = serializers.SerializerMethodField()
+    has_pdf = serializers.SerializerMethodField()
+    pdf_filename = serializers.SerializerMethodField()
 
     class Meta:
         model = AssessmentAttempt
@@ -138,7 +141,32 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
             "max_disconnection_grace_seconds",
             "sections",
             "questions",
+            "delivery_mode",
+            "has_pdf",
+            "pdf_filename",
         ]
+
+    def get_delivery_mode(self, obj):
+        if obj.assessment:
+            return obj.assessment.delivery_mode
+        return "MCQ"
+
+    def get_has_pdf(self, obj):
+        if obj.assessment and obj.assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+            try:
+                return hasattr(obj.assessment, "pdf_document") and bool(obj.assessment.pdf_document)
+            except Exception:
+                return False
+        return False
+
+    def get_pdf_filename(self, obj):
+        if obj.assessment and obj.assessment.delivery_mode == Assessment.DeliveryMode.PDF_CODING:
+            try:
+                if hasattr(obj.assessment, "pdf_document") and obj.assessment.pdf_document:
+                    return obj.assessment.pdf_document.original_filename
+            except Exception:
+                return None
+        return None
 
     def get_sections(self, obj):
         if obj.assessment:
@@ -260,6 +288,8 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
     total_questions = serializers.SerializerMethodField()
     breakdown = serializers.SerializerMethodField()
     is_results_released = serializers.SerializerMethodField()
+    delivery_mode = serializers.SerializerMethodField()
+    is_manual_evaluation_pending = serializers.SerializerMethodField()
 
     class Meta:
         model = AssessmentAttempt
@@ -289,7 +319,17 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
             "started_at",
             "submitted_at",
             "breakdown",
+            "delivery_mode",
+            "is_manual_evaluation_pending",
         ]
+
+    def get_delivery_mode(self, obj):
+        if obj.assessment:
+            return obj.assessment.delivery_mode
+        return "MCQ"
+
+    def get_is_manual_evaluation_pending(self, obj):
+        return obj.state == AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION
 
     def to_representation(self, instance):
         data = super().to_representation(instance)
@@ -483,7 +523,10 @@ class StudentCandidateAssessmentSerializer(serializers.ModelSerializer):
             "latest_attempt_state",
             "latest_attempt_score",
             "sections",
+            "delivery_mode",
         ]
+
+    delivery_mode = serializers.CharField(read_only=True)
 
     def get_is_open(self, obj):
         return obj.is_currently_open()
@@ -509,6 +552,7 @@ class StudentCandidateAssessmentSerializer(serializers.ModelSerializer):
                 AssessmentAttempt.State.SUBMITTED,
                 AssessmentAttempt.State.TIMED_OUT,
                 AssessmentAttempt.State.FLAGGED_FOR_REVIEW,
+                AssessmentAttempt.State.COMPLETED_PENDING_MANUAL_EVALUATION,
             ]
         ).count()
         return completed < obj.max_attempts
