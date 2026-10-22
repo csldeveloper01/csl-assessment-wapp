@@ -102,6 +102,7 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
     questions = serializers.SerializerMethodField()
     remaining_seconds = serializers.SerializerMethodField()
     candidate_name = serializers.CharField(source="candidate.full_name", read_only=True)
+    candidate_register_number = serializers.CharField(source="candidate.register_number", read_only=True)
     college = serializers.CharField(source="candidate.college", read_only=True)
     assessment_id = serializers.UUIDField(source="assessment.id", read_only=True, allow_null=True)
     assessment_title = serializers.SerializerMethodField()
@@ -128,6 +129,7 @@ class AssessmentAttemptDetailSerializer(serializers.ModelSerializer):
             "remaining_seconds",
             "server_time",
             "candidate_name",
+            "candidate_register_number",
             "college",
             "total_questions",
             "tab_switch_count",
@@ -276,6 +278,7 @@ class IntegrityEventSerializer(serializers.Serializer):
 
 class AssessmentResultSerializer(serializers.ModelSerializer):
     candidate_name = serializers.CharField(source="candidate.full_name", read_only=True)
+    candidate_register_number = serializers.CharField(source="candidate.register_number", read_only=True)
     register_number = serializers.CharField(source="candidate.register_number", read_only=True)
     college = serializers.CharField(source="candidate.college", read_only=True)
     department = serializers.CharField(source="candidate.department", read_only=True)
@@ -299,6 +302,7 @@ class AssessmentResultSerializer(serializers.ModelSerializer):
             "assessment_title",
             "assessment_code",
             "candidate_name",
+            "candidate_register_number",
             "register_number",
             "college",
             "department",

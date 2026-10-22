@@ -146,6 +146,7 @@ export interface AttemptDetailResponse {
   remaining_seconds: number;
   server_time?: string;
   candidate_name: string;
+  candidate_register_number?: string;
   college: string;
   total_questions: number;
   tab_switch_count: number;

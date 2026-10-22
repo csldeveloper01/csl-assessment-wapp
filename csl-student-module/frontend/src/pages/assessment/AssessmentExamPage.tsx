@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import cslTypographyLogo from '../../assets/CSL-TYPOGRAPHY.png';
+import { SecurePdfViewer } from '../../components/assessment/SecurePdfViewer';
 import {
   getAttemptState,
   saveAnswer,
@@ -84,10 +85,10 @@ export function AssessmentExamPage() {
   );
 
   // PDF Assessment Mode State
-  const [pdfBlobUrl, setPdfBlobUrl] = useState<string | null>(null);
+  const [pdfBlob, setPdfBlob] = useState<Blob | null>(null);
   const [pdfLoading, setPdfLoading] = useState<boolean>(false);
   const [pdfError, setPdfError] = useState<string | null>(null);
-  const [pdfZoom, setPdfZoom] = useState<number>(100);
+
 
   const isPageHiddenRef = useRef<boolean>(false);
 
@@ -250,19 +251,17 @@ export function AssessmentExamPage() {
   }, [loadAttempt]);
 
   // Load PDF for PDF Coding assessments
-  useEffect(() => {
+  const loadPdf = useCallback(() => {
     const isPdf = attempt?.delivery_mode === 'PDF_CODING' || Boolean(attempt?.has_pdf);
-    if (!attemptId || !isPdf) return;
+    if (!attemptId || !isPdf) return undefined;
     let isMounted = true;
-    let currentUrl: string | null = null;
     setPdfLoading(true);
     setPdfError(null);
 
     fetchAttemptPdfBlob(attemptId)
       .then((blob) => {
         if (!isMounted) return;
-        currentUrl = URL.createObjectURL(blob);
-        setPdfBlobUrl(currentUrl);
+        setPdfBlob(blob);
       })
       .catch(async (err: any) => {
         if (!isMounted) return;
@@ -286,9 +285,15 @@ export function AssessmentExamPage() {
 
     return () => {
       isMounted = false;
-      if (currentUrl) URL.revokeObjectURL(currentUrl);
     };
   }, [attemptId, attempt?.delivery_mode, attempt?.has_pdf]);
+
+  useEffect(() => {
+    const cleanup = loadPdf();
+    return () => {
+      if (cleanup) cleanup();
+    };
+  }, [loadPdf]);
 
   // Keep active section tab synchronized with current question section
   useEffect(() => {
@@ -1143,7 +1148,7 @@ export function AssessmentExamPage() {
             boxSizing: 'border-box',
           }}
         >
-          {/* PDF Mode Info & Controls Bar */}
+          {/* PDF Mode Info Bar */}
           <div
             style={{
               backgroundColor: '#FFFFFF',
@@ -1179,164 +1184,103 @@ export function AssessmentExamPage() {
                 Write all solutions on your physical answer paper. No digital code submission is collected.
               </span>
             </div>
-
-            {/* Zoom / Controls */}
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <button
-                type="button"
-                onClick={() => setPdfZoom((z) => Math.max(50, z - 15))}
+              <span
                 style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '6px',
+                  fontSize: '12px',
+                  color: '#059669',
+                  fontWeight: 700,
+                  backgroundColor: '#ECFDF5',
                   padding: '4px 10px',
                   borderRadius: '6px',
-                  border: '1px solid #CBD5E1',
-                  backgroundColor: '#FFFFFF',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  color: '#334155',
+                  border: '1px solid #A7F3D0',
                 }}
-                title="Zoom Out"
               >
-                − Zoom
-              </button>
-              <span style={{ fontSize: '12px', fontWeight: 700, color: '#475569', minWidth: '45px', textAlign: 'center' }}>
-                {pdfZoom}%
+                🔒 Read-Only Question Paper
               </span>
-              <button
-                type="button"
-                onClick={() => setPdfZoom((z) => Math.min(200, z + 15))}
-                style={{
-                  padding: '4px 10px',
-                  borderRadius: '6px',
-                  border: '1px solid #CBD5E1',
-                  backgroundColor: '#FFFFFF',
-                  fontSize: '12px',
-                  fontWeight: 700,
-                  cursor: 'pointer',
-                  color: '#334155',
-                }}
-                title="Zoom In"
-              >
-                + Zoom
-              </button>
-              <button
-                type="button"
-                onClick={() => setPdfZoom(100)}
-                style={{
-                  padding: '4px 10px',
-                  borderRadius: '6px',
-                  border: '1px solid #CBD5E1',
-                  backgroundColor: '#FFFFFF',
-                  fontSize: '12px',
-                  fontWeight: 600,
-                  cursor: 'pointer',
-                  color: '#64748B',
-                }}
-                title="Reset to 100%"
-              >
-                Reset
-              </button>
             </div>
           </div>
 
-          {/* PDF Viewer Container */}
-          <div
-            style={{
-              flex: 1,
-              minHeight: 0,
-              backgroundColor: '#525659',
-              borderRadius: '12px',
-              overflow: 'hidden',
-              boxShadow: '0 4px 16px -2px rgba(11, 46, 111, 0.08)',
-              position: 'relative',
-              display: 'flex',
-              flexDirection: 'column',
-            }}
-          >
-            {pdfLoading ? (
+          {/* Secure Custom PDF.js Viewer */}
+          {pdfLoading ? (
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                backgroundColor: '#1E293B',
+                borderRadius: '12px',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                color: '#FFFFFF',
+                gap: '12px',
+              }}
+            >
               <div
                 style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  height: '100%',
-                  color: '#FFFFFF',
-                  gap: '12px',
+                  width: '36px',
+                  height: '36px',
+                  border: '3px solid rgba(255,255,255,0.3)',
+                  borderTopColor: '#FFD45C',
+                  borderRadius: '50%',
+                  animation: 'spin 1s linear infinite',
                 }}
-              >
-                <div
-                  style={{
-                    width: '36px',
-                    height: '36px',
-                    border: '3px solid rgba(255,255,255,0.3)',
-                    borderTopColor: '#FFD45C',
-                    borderRadius: '50%',
-                    animation: 'spin 1s linear infinite',
-                  }}
-                />
-                <span style={{ fontSize: '14px', fontWeight: 600 }}>Loading Question Paper PDF...</span>
-              </div>
-            ) : pdfError ? (
-              <div
-                style={{
-                  display: 'flex',
-                  flexDirection: 'column',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  height: '100%',
-                  backgroundColor: '#FFFFFF',
-                  padding: '32px',
-                  textAlign: 'center',
-                }}
-              >
-                <div style={{ fontSize: '36px', marginBottom: '12px' }}>⚠️</div>
-                <h3 style={{ color: '#DC2626', fontSize: '18px', fontWeight: 800, margin: '0 0 8px' }}>
-                  Unable to Load Question Paper
-                </h3>
-                <p style={{ color: '#64748B', fontSize: '13px', maxWidth: '420px', margin: '0 0 16px' }}>
-                  {pdfError}
-                </p>
-                <button
-                  type="button"
-                  onClick={() => window.location.reload()}
-                  style={{
-                    padding: '8px 18px',
-                    backgroundColor: '#0B2E6F',
-                    color: '#FFFFFF',
-                    borderRadius: '8px',
-                    border: 'none',
-                    fontWeight: 700,
-                    cursor: 'pointer',
-                  }}
-                >
-                  Reload Question Paper
-                </button>
-              </div>
-            ) : pdfBlobUrl ? (
-              <iframe
-                src={`${pdfBlobUrl}#toolbar=1&navpanes=0&zoom=${pdfZoom}`}
-                style={{
-                  width: '100%',
-                  height: '100%',
-                  border: 'none',
-                }}
-                title="Question Paper PDF"
               />
-            ) : (
-              <div
+              <span style={{ fontSize: '14px', fontWeight: 600 }}>Loading Question Paper PDF...</span>
+            </div>
+          ) : pdfError ? (
+            <div
+              style={{
+                flex: 1,
+                minHeight: 0,
+                backgroundColor: '#FFFFFF',
+                borderRadius: '12px',
+                border: '1px solid #E2E8F0',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                alignItems: 'center',
+                padding: '32px',
+                textAlign: 'center',
+              }}
+            >
+              <div style={{ fontSize: '36px', marginBottom: '12px' }}>⚠️</div>
+              <h3 style={{ color: '#DC2626', fontSize: '18px', fontWeight: 800, margin: '0 0 8px' }}>
+                Unable to Load Question Paper
+              </h3>
+              <p style={{ color: '#64748B', fontSize: '13px', maxWidth: '420px', margin: '0 0 16px' }}>
+                {pdfError}
+              </p>
+              <button
+                type="button"
+                onClick={() => loadPdf()}
                 style={{
-                  display: 'flex',
-                  justifyContent: 'center',
-                  alignItems: 'center',
-                  height: '100%',
+                  padding: '8px 18px',
+                  backgroundColor: '#0B2E6F',
                   color: '#FFFFFF',
+                  borderRadius: '8px',
+                  border: 'none',
+                  fontWeight: 700,
+                  cursor: 'pointer',
                 }}
               >
-                No question paper available.
-              </div>
-            )}
-          </div>
+                Retry Loading
+              </button>
+            </div>
+          ) : (
+            <SecurePdfViewer
+              pdfBlob={pdfBlob}
+              candidateName={attempt.candidate_name || 'Candidate'}
+              candidateIdentifier={attempt.candidate_register_number || attempt.college || ''}
+              assessmentCode={attempt.assessment_code}
+              attemptId={attempt.id}
+              onLoadError={(err) => setPdfError(err)}
+            />
+          )}
         </div>
       ) : (
       <div
