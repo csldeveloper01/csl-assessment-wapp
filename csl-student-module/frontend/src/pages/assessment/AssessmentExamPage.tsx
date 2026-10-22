@@ -113,7 +113,7 @@ export function AssessmentExamPage() {
     } catch (e) {
       console.warn('Failed to record pending answer in local storage:', e);
     }
-  }, [attemptId, getPendingQueue]);
+  }, [attemptId, getPendingQueue, attempt?.delivery_mode, attempt?.has_pdf]);
 
   const removeFromPendingQueue = useCallback((qOrder: number) => {
     if (!attemptId) return;
@@ -127,11 +127,16 @@ export function AssessmentExamPage() {
     } catch (e) {
       console.warn('Failed to remove pending answer from local storage:', e);
     }
-  }, [attemptId, getPendingQueue]);
+  }, [attemptId, getPendingQueue, attempt?.delivery_mode, attempt?.has_pdf]);
 
   // Flush pending answers with bulk sync API
   const flushPendingQueue = useCallback(async () => {
     if (!attemptId) return;
+    const isPdf = attempt?.delivery_mode === 'PDF_CODING' || Boolean(attempt?.has_pdf);
+    if (isPdf) {
+      localStorage.removeItem(`csl_pending_answers_${attemptId}`);
+      return;
+    }
     const map = getPendingQueue();
     const items = Object.values(map);
     if (items.length === 0) return;
@@ -164,7 +169,7 @@ export function AssessmentExamPage() {
     } catch (err) {
       console.warn('Pending answers flush failed, will retry automatically:', err);
     }
-  }, [attemptId, getPendingQueue]);
+  }, [attemptId, getPendingQueue, attempt?.delivery_mode, attempt?.has_pdf]);
 
   // 1. Fetch initial attempt state
   const loadAttempt = useCallback(async () => {
@@ -349,12 +354,17 @@ export function AssessmentExamPage() {
         if (
           hb.state === 'SUBMITTED' ||
           hb.state === 'TIMED_OUT' ||
-          hb.state === 'FLAGGED_FOR_REVIEW'
+          hb.state === 'FLAGGED_FOR_REVIEW' ||
+          hb.state === 'COMPLETED_PENDING_MANUAL_EVALUATION'
         ) {
-          navigate(`/assessment/results/${hb.attempt_id}`, { replace: true });
+          navigate(`/assessment/results/${hb.attempt_id || attemptId}`, { replace: true });
         }
-      } catch {
-        setIsOffline(true);
+      } catch (err: any) {
+        if (!navigator.onLine || !err?.response) {
+          setIsOffline(true);
+        } else {
+          console.warn('Heartbeat check warning:', err?.response?.status);
+        }
       }
     }, 25000);
 
@@ -370,9 +380,15 @@ export function AssessmentExamPage() {
       await flushPendingQueue();
       const res = await finalizeAssessment(attemptId);
       localStorage.removeItem(`csl_pending_answers_${attemptId}`);
-      navigate(`/assessment/results/${res.id}`, { replace: true });
-    } catch {
-      alert('Error submitting assessment. Retrying finalize...');
+      navigate(`/assessment/results/${res.id || attemptId}`, { replace: true });
+    } catch (err: any) {
+      console.error('Finalize error:', err);
+      const errMsg = err?.response?.data?.detail || err?.message || '';
+      if (err?.response?.status === 400 && (errMsg.includes('already') || errMsg.includes('expired') || errMsg.includes('finalized'))) {
+        navigate(`/assessment/results/${attemptId}`, { replace: true });
+        return;
+      }
+      alert(`Error submitting assessment: ${errMsg || 'Please notify your test invigilator.'}`);
       setSubmitting(false);
     }
   }, [attemptId, submitting, navigate, flushPendingQueue]);
